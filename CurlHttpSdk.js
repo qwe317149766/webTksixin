@@ -21,9 +21,9 @@ const EventEmitter = require('events');
 const Log = console;
 
 const CONNECTION_POOL_CONFIG = {
-    INITIAL_SIZE: 5,
-    MAX_FAILURES_PER_CONNECTION: 3,
-    CONNECTION_IDLE_TIMEOUT: 1200000
+    INITIAL_SIZE: 5,						//初始化5个连接	
+    MAX_FAILURES_PER_CONNECTION: 100,		//每个IP最多使用100次	
+    CONNECTION_IDLE_TIMEOUT: 300000 		//每个IP只能使用5分钟
 };
 
 class CurlHttpSdk extends EventEmitter {
