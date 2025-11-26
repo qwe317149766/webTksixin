@@ -23,7 +23,7 @@ const Log = console;
 const CONNECTION_POOL_CONFIG = {
     INITIAL_SIZE: 5,
     MAX_FAILURES_PER_CONNECTION: 3,
-    CONNECTION_IDLE_TIMEOUT: 120000
+    CONNECTION_IDLE_TIMEOUT: 1200000
 };
 
 class CurlHttpSdk extends EventEmitter {
@@ -32,6 +32,7 @@ class CurlHttpSdk extends EventEmitter {
         this.multi = new Multi();
         this.handles = [];
         this.handlesData = [];
+        this.handlesHeaders = [];
         this.callbacks = new Map();
         this.proxyPool = options.proxyPool || [];
         this.defaultProxy = options.proxy || null;
@@ -69,9 +70,26 @@ class CurlHttpSdk extends EventEmitter {
                 if (conn) conn.failureCount += 1;
                 callback.reject(new Error(`Request failed: ${error.message}, code: ${errorCode}`));
             } else {
+				const key = this.handles.indexOf(handle);
+				const dataBuffers = this.handlesData[key] || [];
+				const responseBody = Buffer.concat(dataBuffers);
+
+				const rawHeaders = this.handlesHeaders[key] || [];
+				const headers = {};
+				for (const line of rawHeaders) {
+					const idx = line.indexOf(':');
+					if (idx > 0) {
+						const name = line.slice(0, idx).trim();
+						const value = line.slice(idx + 1).trim();
+						headers[name.toLowerCase()] = value;
+					}
+				}
+				console.log("[headers]:",headers)
                 callback.resolve({
                     ok: responseCode >= 200 && responseCode < 300,
                     status: responseCode,
+					body: responseBody,
+					headers,
                     text: async () => responseBody.toString('utf-8'),
                     json: async () => JSON.parse(responseBody.toString('utf-8'))
                 });
@@ -201,7 +219,8 @@ class CurlHttpSdk extends EventEmitter {
             if (body instanceof Uint8Array || body instanceof ArrayBuffer) {
                 const buf = Buffer.from(body);
                 let pos = 0;
-                handle.enable(CurlFeature.NoDataParsing);
+				console.log("CurlFeature:",CurlFeature)
+                // handle.enable(CurlFeature.NoDataParsing);
                 handle.setOpt('POST', true);
                 handle.setOpt('READFUNCTION', (buffer, size, nmemb) => {
                     const toRead = size * nmemb;
@@ -218,12 +237,21 @@ class CurlHttpSdk extends EventEmitter {
         }
 
         this.handlesData.push([]);
+		this.handlesHeaders.push([]);
+
         handle.setOpt('WRITEFUNCTION', (data, n, nmemb) => {
             const idx = this.handles.indexOf(handle);
             if (idx >= 0) this.handlesData[idx].push(data);
             else this.handlesData[this.handlesData.length - 1].push(data);
             return n * nmemb;
         });
+		handle.setOpt('HEADERFUNCTION', (data, size, nmemb) => {
+			const headerString = data.toString('utf8');
+			const idx = this.handles.indexOf(handle);
+			if (idx >= 0) this.handlesHeaders[idx].push(headerString);
+			else this.handlesHeaders[this.handlesHeaders.length - 1].push(headerString);
+			return size * nmemb;
+		});
 
         return handle;
     }

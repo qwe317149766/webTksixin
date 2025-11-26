@@ -10,7 +10,7 @@ const {
 	encrpytCreateConversationV2,
 } = require('./protobufTool')
 const { CurlHttpSdk } = require('../CurlHttpSdk')
-const { getTimestampByTimezone,buildHeadersByLang} = require('../../util/helper')
+const { getTimestampByTimezone,buildHeadersByLang} = require('./util/helper')
 let Log
 try {
 	Log = require('ee-core/log')
@@ -527,6 +527,7 @@ class HttpClient {
 			let setCookieHeaders = null
 
 			// 尝试不同的方式获取 Set-Cookie
+			console.log('response:',response)
 			if (response.headers && typeof response.headers === 'object') {
 				// 方式1: response.headers['0']['Set-Cookie'] 或 response.headers['0']['set-cookie']
 				const headerObj = response.headers['0'] || response.headers[0]
@@ -682,7 +683,7 @@ class HttpClient {
 
 			// 使用CurlHttpSdk发送请求
 			const response = await curlSdk.post(url, body, headers,cookies['sessionid'])
-
+			console.log('response.headers:',response)
 			// 处理 Cookie 更新
 			if (onCookieUpdate && response.headers['set-cookie']) {
 				Log.info(
@@ -751,6 +752,7 @@ class HttpClient {
 		// 我们只需要提取 name=value 部分
 		// 用分号分割，取第一部分（name=value）
 		const parts = setCookieHeader.split(';')
+		console.log('parts:',parts)
 		if (parts.length > 0) {
 			const nameValue = parts[0].trim()
 			const equalIndex = nameValue.indexOf('=')
@@ -762,7 +764,6 @@ class HttpClient {
 				}
 			}
 		}
-
 		return cookies
 	}
 }

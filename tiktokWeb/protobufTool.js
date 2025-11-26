@@ -381,7 +381,6 @@ function decodeResponse(buffer) {
 
 function encrpytCreateConversationV2(headers,uid,to_uid,sequence_id) { 
     //
-    console.log('SUCCESS...')
     let seqId = sequence_id || Math.floor(Math.random() * 500) + 10000;
     const sequenceIdObj = Long.fromString(seqId.toString());
     let defaultHeaders = {

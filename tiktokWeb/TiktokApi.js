@@ -35,16 +35,21 @@ async function sendText(requestData) {
 	//解析cookies
 	let cookie = {}
 	if (typeof cookieParams === 'string') {
-		cookieParams.split(';').forEach(part => {
-			let [key, ...val] = part.trim().split('=')
-			if (key && val.length > 0) {
-				cookie[key] = val.join('=')
-			}
-		})
+		//判断是否是json
+		if(cookieParams.startsWith('{') && cookieParams.endsWith('}')){
+			cookie = JSON.parse(cookieParams)
+		}else{	
+				cookieParams.split(';').forEach(part => {
+					let [key, ...val] = part.trim().split('=')
+					if (key && val.length > 0) {
+						cookie[key] = val.join('=')
+					}
+				})
+		}
 	} else {
 		cookie = cookieParams
 	}
-
+	console.log('cookieParams:',cookie,typeof cookie,cookie['store-country-code'])
 	// process.exit()
 	// 从 multi_sids 中提取 uid
 	let multiSids = cookie['multi_sids']

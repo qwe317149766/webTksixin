@@ -10,6 +10,8 @@ const redis = require('./config/redis');
 const { sendText } = require('./tiktokWeb/TiktokApi');
 const CookiesQueue = require('./utils/cookiesQueue');
 const { updateCookieStatus, getNormalCookies } = require('./utils/cookieStatusUpdater');
+const TaskStore = require('./utils/taskStore');
+const { initSocketServer } = require('./services/socketService');
 
 const app = express();
 const PORT = config.server.port;
@@ -38,6 +40,50 @@ app.use((req, res, next) => {
   });
   next();
 });
+
+/**
+ * 将 uids 参数标准化为数组
+ * 支持字符串（逗号/空格分隔）、数字、数组、以及 form-data 的 uids[]
+ * @param {*} rawUids
+ * @returns {string[]}
+ */
+function normalizeUids(rawUids) {
+  let source = rawUids;
+  if (source === undefined) {
+    return [];
+  }
+
+  // 处理 form-data 中的 uids[]
+  if (Array.isArray(source)) {
+    return source
+      .map(item => (item === null || item === undefined ? '' : item).toString().trim())
+      .filter(Boolean);
+  }
+
+  // 处理数字
+  if (typeof source === 'number') {
+    return [source.toString()];
+  }
+
+  if (typeof source === 'string') {
+    return source
+      .split(/[,，\s]+/)
+      .map(item => item.trim())
+      .filter(Boolean);
+  }
+
+  // 处理对象（例如 { 'uids[]': '123,456' }）
+  if (typeof source === 'object') {
+    if (Array.isArray(source['uids[]'])) {
+      return normalizeUids(source['uids[]']);
+    }
+    if (typeof source['uids[]'] === 'string') {
+      return normalizeUids(source['uids[]']);
+    }
+  }
+
+  return [];
+}
 
 // 限流配置
 const limiter = rateLimit({
@@ -339,10 +385,11 @@ app.post('/api/tiktok/send-text', async (req, res) => {
       sendSequenceId: finalSendSequenceId,
     };
 
-    // 调用 TiktokApi 的 sendText 方法
+    // 调用web  TiktokApi 的 sendText 方法
     const result = await sendText(requestData);
 
-    // 更新 used_count（使用次数+1）
+    // 更新 used_count（使用次数+1)
+    
     try {
       await dbConnection.execute(
         `UPDATE ${tableName} SET used_count = used_count + 1, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
@@ -401,6 +448,98 @@ app.post('/api/tiktok/send-text', async (req, res) => {
     if (dbConnection) {
       dbConnection.release();
     }
+  }
+});
+
+/**
+ * 提交发送任务
+ * POST /api/tasks/submit
+ *
+ * Body:
+ * {
+ *   "uids": "123,456" | ["123","456"],
+ *   "content": "消息内容",
+ *   "msgType": 1,
+ *   "proxy": "http://xxx:9000",
+ *   "sendType": 0 // 0=web, 1=app
+ * }
+ */
+app.post('/api/tasks/submit', async (req, res) => {
+  try {
+    const rawUids = req.body.uids ?? req.body['uids[]'];
+    const uidList = normalizeUids(rawUids);
+
+    if (!uidList.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'uids 参数不能为空，支持数组或以逗号/空格分隔的字符串',
+      });
+    }
+
+    const { content, msgType, proxy, sendType, batchNo } = req.body;
+
+    if (!content || typeof content !== 'string' || !content.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'content 不能为空',
+      });
+    }
+
+    if (msgType === undefined || msgType === null || Number.isNaN(Number(msgType))) {
+      return res.status(400).json({
+        success: false,
+        message: 'msgType 必须是数字',
+      });
+    }
+
+    const normalizedMsgType = Number(msgType);
+    let normalizedSendType = 0;
+    if (sendType !== undefined && sendType !== null && sendType !== '') {
+      const parsed = Number(sendType);
+      if (![0, 1].includes(parsed)) {
+        return res.status(400).json({
+          success: false,
+          message: 'sendType 仅支持 0(web) 或 1(app)',
+        });
+      }
+      normalizedSendType = parsed;
+    }
+
+    if (batchNo === undefined || batchNo === null) {
+      return res.status(400).json({
+        success: false,
+        message: 'batchNo 不能为空，必须携带批次号',
+      });
+    }
+    const batchNoStr = String(batchNo).trim();
+    if (!batchNoStr) {
+      return res.status(400).json({
+        success: false,
+        message: 'batchNo 不能为空字符串',
+      });
+    }
+
+    const task = await TaskStore.addTask({
+      uids: uidList,
+      content: content.trim(),
+      msgType: normalizedMsgType,
+      proxy: proxy || null,
+      sendType: normalizedSendType,
+      batchNo: batchNoStr,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: '任务提交成功',
+      data: task,
+    });
+  } catch (error) {
+    console.error('提交任务失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '提交任务失败',
+      error: error.message,
+    });
   }
 });
 
@@ -578,6 +717,9 @@ const server = app.listen(PORT, () => {
   console.log(`📊 环境: ${config.env}`);
   console.log(`🔗 健康检查: http://localhost:${PORT}/health`);
 });
+
+// 初始化 Socket.IO
+initSocketServer(server);
 
 // 优雅关闭
 process.on('SIGTERM', () => {

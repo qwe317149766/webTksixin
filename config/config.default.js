@@ -9,6 +9,9 @@ module.exports = {
   cookies: {
     saveToRedis: false, // 是否将正常CK存入Redis队列
   },
+  task: {
+    batchSize: 10, // 批量处理任务数量
+  },
   mysql: {
     host: 'localhost',
     port: 3306,
