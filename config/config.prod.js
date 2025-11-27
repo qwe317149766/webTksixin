@@ -4,6 +4,24 @@ module.exports = {
     port: 3000,
     workers: require('os').cpus().length,
   },
+  // 远程 MySQL（用于账户余额等）
+  authMysql: {
+    host: '217.77.12.171',
+    port: 3306,
+    user: 'uni_fb',
+    password: 'G4fMJZCkjHLLZDNs',
+    database: 'uni_fb',
+    connectionLimit: 100,
+    queueLimit: 0,
+    waitForConnections: true,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
+    connectTimeout: 35000,
+    charset: 'utf8mb4',
+    timezone: '+00:00',
+    multipleStatements: false
+  },
+  // 本地 MySQL（用于 cookies 等）
   mysql: {
     host: 'localhost',
     port: 3306,

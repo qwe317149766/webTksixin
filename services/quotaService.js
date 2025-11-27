@@ -1,5 +1,6 @@
 const redis = require('../config/redis');
-const mysqlPool = require('../config/database');
+// 使用远程 MySQL（authPool）读取账户余额
+const { authPool: authMysqlPool } = require('../config/database');
 
 const QUOTA_KEY = 'user:score';
 const QUOTA_CONFIG_KEY = 'pay:config';
@@ -19,7 +20,8 @@ async function getQuotaFromRedis(uid) {
  */
 async function getQuotaFromDB(uid) {
   try {
-    const [rows] = await mysqlPool.execute(
+    // 使用远程 MySQL 读取账户余额
+    const [rows] = await authMysqlPool.execute(
       `SELECT  * FROM ${QUOTA_TABLE} WHERE id = ?  LIMIT 1`,
       [uid]
     );
@@ -58,7 +60,8 @@ async function getPayConfigFromDB(uid) {
         // 继续从数据库获取
       }
     }
-    const [rows] = await mysqlPool.execute(
+    // 使用远程 MySQL 读取账户配置
+    const [rows] = await authMysqlPool.execute(
       `SELECT  * FROM uni_system_admin WHERE id = ?  LIMIT 1`,
       [uid]
     );
@@ -76,7 +79,8 @@ async function getPayConfigFromDB(uid) {
     //到system表中去查询
     //如果有一个没有值就从uni_sysyem_config表中去获取
     if(proxy_price <= 0 || unit_proxy <= 0 || unit_sixin <= 0 || sixin_price <= 0 || unit_score <= 0 || score_price <= 0) {
-      const [systemRows] = await mysqlPool.execute(
+      // 使用远程 MySQL 读取系统配置
+      const [systemRows] = await authMysqlPool.execute(
         `SELECT  * FROM uni_system_config WHERE config_tab_id = 31  LIMIT 1`,
       );
        // 将 二维数组转成一维 然后 menu_name 是key value是value
