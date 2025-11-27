@@ -7,8 +7,8 @@ module.exports = {
   mysql: {
     host: 'localhost',
     port: 3306,
-    user: 'root',
-    password: '123456',
+    user: 'uni_fb',
+    password: 'G4fMJZCkjHLLZDNs',
     database: 'uni_fb',
     connectionLimit: 1000,
     queueLimit: 0,
@@ -41,7 +41,7 @@ module.exports = {
   redis: {
     host: '127.0.0.1',
     port: 6379,
-    password: '',
+    password: 'a123456',
     db: 0,
     maxRetriesPerRequest: 3,
     retryStrategy: (times) => {
