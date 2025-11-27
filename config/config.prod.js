@@ -1,22 +1,65 @@
 // config/config.prod.js
 module.exports = {
-  mysql: {
-    host: 'your_prod_mysql_host',
-    password: 'your_prod_mysql_password',
-    database: 'tiktok_db_prod',
-    connectionLimit: 100,
-  },
-  redis: {
-    host: 'your_prod_redis_host',
-    password: 'your_prod_redis_password',
-  },
   server: {
-    port: 80,
+    port: 3000,
+    workers: require('os').cpus().length,
+  },
+  mysql: {
+    host: 'localhost',
+    port: 3306,
+    user: 'root',
+    password: '123456',
+    database: 'uni_fb',
+    connectionLimit: 1000,
+    queueLimit: 0,
+    waitForConnections: true,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
+    connectTimeout: 35000,
+    charset: 'utf8mb4',
+    timezone: '+00:00',
+    multipleStatements: false
+  },
+  // 鉴权 Redis（远程服务器，用于 token 验证等）
+  authRedis: {
+    host: '217.77.12.171',
+    port: 6379,
+    password: 'a123456',
+    db: 0,
+    maxRetriesPerRequest: 3,
+    retryStrategy: (times) => {
+      return Math.min(times * 1000, 20000);
+    },
+    enableReadyCheck: true,
+    enableOfflineQueue: true,
+    lazyConnect: false,
+    connectTimeout: 10000,
+    commandTimeout: 5000,
+    keepAlive: 30000
+  },
+  // 本地 Redis（用于任务队列、配额等）
+  redis: {
+    host: '127.0.0.1',
+    port: 6379,
+    password: '',
+    db: 0,
+    maxRetriesPerRequest: 3,
+    retryStrategy: (times) => {
+      return Math.min(times * 1000, 20000);
+    },
+    enableReadyCheck: true,
+    enableOfflineQueue: true,
+    lazyConnect: false,
+    connectTimeout: 10000,
+    commandTimeout: 5000,
+    keepAlive: 30000
   },
   cors: {
-    origin: 'https://your-production-domain.com',
+    origin: '*',
+    credentials: true
   },
   rateLimit: {
-    max: 1000, // 为生产环境设置更高的请求限制
+    windowMs: 1 * 60 * 1000,
+    max: 100000,
   }
 };

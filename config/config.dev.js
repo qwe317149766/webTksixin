@@ -20,10 +20,28 @@ module.exports = {
     timezone: '+00:00',
     multipleStatements: false
   },
-  redis: {
+  // 鉴权 Redis（远程服务器，用于 token 验证等）
+  authRedis: {
     host: '217.77.12.171',
     port: 6379,
     password: 'a123456',
+    db: 0,
+    maxRetriesPerRequest: 3,
+    retryStrategy: (times) => {
+      return Math.min(times * 1000, 20000);
+    },
+    enableReadyCheck: true,
+    enableOfflineQueue: true,
+    lazyConnect: false,
+    connectTimeout: 10000,
+    commandTimeout: 5000,
+    keepAlive: 30000
+  },
+  // 本地 Redis（用于任务队列、配额等）
+  redis: {
+    host: '127.0.0.1',
+    port: 6379,
+    password: '',
     db: 0,
     maxRetriesPerRequest: 3,
     retryStrategy: (times) => {
