@@ -9,7 +9,7 @@ module.exports = {
     port: 3306,
     user: 'root',
     password: '123456',
-    database: 'tiktok_web_sixin',
+    database: 'uni_fb',
     connectionLimit: 1000,
     queueLimit: 0,
     waitForConnections: true,
@@ -21,7 +21,7 @@ module.exports = {
     multipleStatements: false
   },
   redis: {
-    host: 'localhost',
+    host: '217.77.12.171',
     port: 6379,
     password: 'a123456',
     db: 0,

@@ -12,6 +12,10 @@ const CookiesQueue = require('./utils/cookiesQueue');
 const { updateCookieStatus, getNormalCookies } = require('./utils/cookieStatusUpdater');
 const TaskStore = require('./utils/taskStore');
 const { initSocketServer } = require('./services/socketService');
+const Response = require('./utils/response');
+const { verifyToken } = require('./services/authService');
+const QuotaService = require('./services/quotaService');
+const GuidUtil = require('./utils/guid');
 
 const app = express();
 const PORT = config.server.port;
@@ -85,6 +89,56 @@ function normalizeUids(rawUids) {
   return [];
 }
 
+/**
+ * 根据 userId、batchNo、taskId 与 UID 列表，将任务写入队列
+ * @param {string|number} userId
+ * @param {string} taskId
+ * @param {string} batchNo
+ * @param {*} rawUids - 原始 UID 列表（字符串/数组等）
+ * @returns {Promise<{userId: string, taskId: string, batchNo: string, added: number, duplicated: number, total: number}>}
+ */
+async function enqueueTaskUids(userId, taskId, batchNo, rawUids) {
+  if (userId === undefined || userId === null) {
+    throw new Error('userId 不能为空');
+  }
+  const normalizedUserId = String(userId).trim();
+  if (!normalizedUserId) {
+    throw new Error('userId 不能为空字符串');
+  }
+
+  if (!taskId || typeof taskId !== 'string' || !taskId.trim()) {
+    throw new Error('taskId 不能为空');
+  }
+
+  const normalizedTaskId = taskId.trim();
+  const normalizedBatchNo = (batchNo !== undefined && batchNo !== null ? String(batchNo) : normalizedTaskId).trim();
+  if (!normalizedBatchNo) {
+    throw new Error('batchNo 不能为空');
+  }
+
+  const uidList = normalizeUids(rawUids);
+
+  if (!uidList.length) {
+    throw new Error('uid 列表不能为空');
+  }
+
+  const result = await TaskStore.addTask({
+    batchNo: normalizedBatchNo,
+    taskId: normalizedTaskId,
+    userId: normalizedUserId,
+    uids: uidList,
+  });
+
+  return {
+    userId: normalizedUserId,
+    taskId: normalizedTaskId,
+    batchNo: result.batchNo,
+    added: result.newUids.length,
+    duplicated: uidList.length - result.newUids.length,
+    total: uidList.length,
+  };
+}
+
 // 限流配置
 const limiter = rateLimit({
   ...config.rateLimit,
@@ -123,7 +177,7 @@ app.get('/health', async (req, res) => {
     health.status = 'degraded';
   }
 
-  res.json(health);
+  return Response.success(res, health, '健康检查成功', 0);
 });
 
 // ==================== API 路由示例 ====================
@@ -132,18 +186,10 @@ app.get('/health', async (req, res) => {
 app.get('/api/users', async (req, res) => {
   try {
     const [rows] = await mysqlPool.execute('SELECT * FROM users LIMIT 10');
-    res.json({
-      success: true,
-      data: rows,
-      count: rows.length
-    });
+    return Response.success(res, { data: rows, count: rows.length }, '查询成功', 0);
   } catch (error) {
     console.error('MySQL 查询错误:', error);
-    res.status(500).json({
-      success: false,
-      message: '数据库查询失败',
-      error: error.message
-    });
+    return Response.error(res, '数据库查询失败', -1, { error: error.message }, 500);
   }
 });
 
@@ -154,26 +200,13 @@ app.get('/api/cache/:key', async (req, res) => {
     const value = await redis.get(key);
     
     if (value) {
-      res.json({
-        success: true,
-        data: JSON.parse(value),
-        fromCache: true
-      });
+      return Response.success(res, { data: JSON.parse(value), fromCache: true }, '查询成功', 0);
     } else {
-      res.json({
-        success: true,
-        data: null,
-        fromCache: false,
-        message: '缓存未命中'
-      });
+      return Response.success(res, { data: null, fromCache: false }, '缓存未命中', 0);
     }
   } catch (error) {
     console.error('Redis 查询错误:', error);
-    res.status(500).json({
-      success: false,
-      message: '缓存查询失败',
-      error: error.message
-    });
+    return Response.error(res, '缓存查询失败', -1, { error: error.message }, 500);
   }
 });
 
@@ -189,17 +222,10 @@ app.post('/api/cache/:key', async (req, res) => {
       await redis.set(key, JSON.stringify(value));
     }
     
-    res.json({
-      success: true,
-      message: '缓存设置成功'
-    });
+    return Response.success(res, null, '缓存设置成功', 0);
   } catch (error) {
     console.error('Redis 设置错误:', error);
-    res.status(500).json({
-      success: false,
-      message: '缓存设置失败',
-      error: error.message
-    });
+    return Response.error(res, '缓存设置失败', -1, { error: error.message }, 500);
   }
 });
 
@@ -213,11 +239,7 @@ app.get('/api/user/:id', async (req, res) => {
     let user = await redis.get(cacheKey);
     
     if (user) {
-      return res.json({
-        success: true,
-        data: JSON.parse(user),
-        fromCache: true
-      });
+      return Response.success(res, { data: JSON.parse(user), fromCache: true }, '查询成功', 0);
     }
     
     // Redis 未命中，查 MySQL
@@ -227,27 +249,16 @@ app.get('/api/user/:id', async (req, res) => {
     );
     
     if (rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: '用户不存在'
-      });
+      return Response.error(res, '用户不存在', -1, null, 404);
     }
     
     // 写入 Redis 缓存（5 分钟过期）
     await redis.setex(cacheKey, 300, JSON.stringify(rows[0]));
     
-    res.json({
-      success: true,
-      data: rows[0],
-      fromCache: false
-    });
+    return Response.success(res, { data: rows[0], fromCache: false }, '查询成功', 0);
   } catch (error) {
     console.error('查询用户错误:', error);
-    res.status(500).json({
-      success: false,
-      message: '查询失败',
-      error: error.message
-    });
+    return Response.error(res, '查询失败', -1, { error: error.message }, 500);
   }
 });
 
@@ -316,19 +327,11 @@ app.post('/api/tiktok/send-text', async (req, res) => {
 
     // 参数验证
     if (!toUid) {
-      return res.status(400).json({
-        success: false,
-        code: -1,
-        message: '缺少必需参数: toUid (目标用户ID)'
-      });
+      return Response.error(res, '缺少必需参数: toUid (目标用户ID)', -1, null, 400);
     }
 
     if (!textMsg || typeof textMsg !== 'string' || textMsg.trim().length === 0) {
-      return res.status(400).json({
-        success: false,
-        code: -1,
-        message: '缺少必需参数: textMsg (消息内容不能为空)'
-      });
+      return Response.error(res, '缺少必需参数: textMsg (消息内容不能为空)', -1, null, 400);
     }
 
     // 从数据库获取 cookie（按 used_count 升序排序，使用次数少的优先）
@@ -344,11 +347,7 @@ app.post('/api/tiktok/send-text', async (req, res) => {
 
     if (records.length === 0) {
       await dbConnection.release();
-      return res.status(404).json({
-        success: false,
-        code: -1,
-        message: `未找到状态为正常(status=1) 的 Cookie`
-      });
+      return Response.error(res, `未找到状态为正常(status=1) 的 Cookie`, -1, null, 404);
     }
 
     const cookieRecord = records[0];
@@ -421,28 +420,16 @@ app.post('/api/tiktok/send-text', async (req, res) => {
       // 状态更新失败不影响接口返回
     }
 
-    // 根据返回的 code 判断成功或失败
-    const isSuccess = result.code === 0;
-
     // 返回结果
-    res.status(isSuccess ? 200 : 400).json({
-      success: isSuccess,
-      code: result.code,
-      message: result.msg,
-      data: result.data,
-      cookieId: cookieId
-    });
+    if (result.code === 0) {
+      return Response.success(res, { ...result.data, cookieId }, result.msg || '发送成功', result.code);
+    } else {
+      return Response.error(res, result.msg || '发送失败', result.code, { ...result.data, cookieId }, 400);
+    }
 
   } catch (error) {
     console.error('发送 TikTok 消息错误:', error);
-    res.status(500).json({
-      success: false,
-      code: -10002,
-      message: '发送消息失败',
-      error: error.message,
-      data: {},
-      ...(config.env === 'dev' && { stack: error.stack })
-    });
+    return Response.error(res, error.message || '发送消息失败', -10002, { ...(config.env === 'dev' && { stack: error.stack }) }, 500);
   } finally {
     // 释放数据库连接
     if (dbConnection) {
@@ -455,91 +442,202 @@ app.post('/api/tiktok/send-text', async (req, res) => {
  * 提交发送任务
  * POST /api/tasks/submit
  *
+ * Headers:
+ *   Authorization: Bearer <token> 或 X-Token: <token>
+ *
  * Body:
  * {
  *   "uids": "123,456" | ["123","456"],
  *   "content": "消息内容",
  *   "msgType": 1,
  *   "proxy": "http://xxx:9000",
- *   "sendType": 0 // 0=web, 1=app
+ *   "sendType": 0, // 0=web, 1=app
+ *   "batchNo": "批次号",
+ *   "total": 100 // 发送条数（必填）
  * }
  */
-app.post('/api/tasks/submit', async (req, res) => {
+app.post('/api/v1/tk-task/submit', async (req, res) => {
   try {
-    const rawUids = req.body.uids ?? req.body['uids[]'];
-    const uidList = normalizeUids(rawUids);
-
-    if (!uidList.length) {
-      return res.status(400).json({
-        success: false,
-        message: 'uids 参数不能为空，支持数组或以逗号/空格分隔的字符串',
-      });
+    // 从请求头获取 token
+    const authHeader = req.headers.authorization || req.headers['x-token'];
+    let token = null;
+    
+    if (authHeader) {
+      // 支持 Bearer <token> 格式
+      if (authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7);
+      } else {
+        token = authHeader;
+      }
+    }
+    
+    // 也可以从 body 中获取 token
+    if (!token && req.body.token) {
+      token = req.body.token;
     }
 
-    const { content, msgType, proxy, sendType, batchNo } = req.body;
+    if (!token) {
+      return Response.error(res, '缺少 token，请在请求头 Authorization 或 X-Token 中提供', -1, null, 401);
+    }
+
+    // 验证 token 并获取用户信息
+    const user = await verifyToken(token);
+    if (!user || !user.uid) {
+      return Response.error(res, 'token 无效或已过期', -1, null, 401);
+    }
+
+    const userId = user.uid;
+
+    // 参数验证
+    const { total, content, msgType, proxy, sendType } = req.body;
+    let taskId = req.body.taskId;
+
+    // 验证 total 参数（必填）
+    if (total === undefined || total === null || Number.isNaN(Number(total))) {
+      return Response.error(res, 'total 参数必填且必须是数字', -1, null, 400);
+    }
+
+    const normalizedTotal = Number(total);
+    if (normalizedTotal <= 0 || !Number.isInteger(normalizedTotal)) {
+      return Response.error(res, 'total 必须是大于 0 的整数', -1, null, 400);
+    }
+
+    // const rawUids = req.body.uids ?? req.body['uids[]'];
+    // const uidList = normalizeUids(rawUids);
+
+    // if (!uidList.length) {
+    //   return Response.error(res, 'uids 参数不能为空，支持数组或以逗号/空格分隔的字符串', -1, null, 400);
+    // }
 
     if (!content || typeof content !== 'string' || !content.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'content 不能为空',
-      });
+      return Response.error(res, 'content 不能为空', -1, null, 400);
     }
 
     if (msgType === undefined || msgType === null || Number.isNaN(Number(msgType))) {
-      return res.status(400).json({
-        success: false,
-        message: 'msgType 必须是数字',
-      });
+      return Response.error(res, 'msgType 必须是数字', -1, null, 400);
     }
 
-    const normalizedMsgType = Number(msgType);
     let normalizedSendType = 0;
     if (sendType !== undefined && sendType !== null && sendType !== '') {
       const parsed = Number(sendType);
       if (![0, 1].includes(parsed)) {
-        return res.status(400).json({
-          success: false,
-          message: 'sendType 仅支持 0(web) 或 1(app)',
-        });
+        return Response.error(res, 'sendType 仅支持 0(web) 或 1(app)', -1, null, 400);
       }
       normalizedSendType = parsed;
     }
+    // 获取用户余额（先查 Redis，如果没有则查数据库）
+    const currentQuota = await QuotaService.getQuota(userId);
 
-    if (batchNo === undefined || batchNo === null) {
-      return res.status(400).json({
-        success: false,
-        message: 'batchNo 不能为空，必须携带批次号',
-      });
-    }
-    const batchNoStr = String(batchNo).trim();
-    if (!batchNoStr) {
-      return res.status(400).json({
-        success: false,
-        message: 'batchNo 不能为空字符串',
-      });
+    //获取每条需要消耗的积分
+    const payConfig = await QuotaService.getPayConfigFromDB(userId);
+    
+    if (!payConfig) {
+      return Response.error(res, '获取支付配置失败', -1, null, 500);
     }
 
-    const task = await TaskStore.addTask({
-      uids: uidList,
-      content: content.trim(),
-      msgType: normalizedMsgType,
-      proxy: proxy || null,
-      sendType: normalizedSendType,
-      batchNo: batchNoStr,
-    });
+    console.log("[payConfig]:",payConfig)
+    //计算代理费用：总数 / 每单位代理数 * 每单位价格
+    const proxyCost = (normalizedTotal / payConfig.unit_proxy) * payConfig.proxy_price;
+    //计算发送费用：总数 / 每单位私信数 * 每单位价格
+    const sendCost = (normalizedTotal / payConfig.unit_sixin) * payConfig.sixin_price;
+    //统计总费用
+    const totalCost = proxyCost + sendCost;
 
-    res.status(201).json({
-      success: true,
-      message: '任务提交成功',
-      data: task,
-    });
+    console.log("[totalCost]:",totalCost)
+    console.log("[proxyCost]:",proxyCost)
+    console.log("[sendCost]:",sendCost)
+    // 判断余额是否足够
+    if (currentQuota < totalCost) {
+      const insufficient = totalCost - currentQuota;
+      return Response.error(res, `余额不足，当前余额: ${currentQuota}，需要: ${totalCost.toFixed(2)}`, -1, {
+        currentQuota,
+        required: totalCost,
+        insufficient: insufficient
+      }, 400);
+    }
+    console.log("[totalCost]:",totalCost)
+    // 余额足够，返回成功（不添加任务，仅验证）
+    const remainingQuota = currentQuota - totalCost;
+    //创建taskID
+    //根据taskID缓存提交的信息
+    //先判断有没有传taskID 有传则更新 没有则新增
+    if(!taskId) {
+      taskId = GuidUtil.generate();
+    }
+    //将提交的信息缓存到redis 
+    await redis.setex(`task:${taskId}`, 86400, JSON.stringify({
+      userId,
+      total: normalizedTotal,
+      payConfig:payConfig,
+      content,
+      msgType,
+      proxy,
+      sendType,
+      taskId,
+      message: '余额验证通过'
+    }));
+    return Response.success(res, { taskId,remainingQuota,totalCost,currentQuota,payConfig}, '任务校验通过', 0);
+
   } catch (error) {
     console.error('提交任务失败:', error);
-    res.status(500).json({
-      success: false,
-      message: '提交任务失败',
-      error: error.message,
-    });
+    return Response.error(res, error.message || '提交任务失败', -1, null, 500);
+  }
+});
+
+/**
+ * 将 UID 列表加入任务队列
+ * Body: { taskId: string, uids: string[] | string }
+ */
+app.post('/api/v1/tk-task/enqueue', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || req.headers['x-token'];
+    let token = null;
+
+    if (authHeader) {
+      if (authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7);
+      } else {
+        token = authHeader;
+      }
+    }
+
+    if (!token && req.body.token) {
+      token = req.body.token;
+    }
+
+    if (!token) {
+      return Response.error(res, '未登录', -1, null, 401);
+    }
+
+    const user = await verifyToken(token);
+    if (!user || !user.uid) {
+      return Response.error(res, 'token 无效或已过期', -1, null, 401);
+    }
+
+    const { taskId, batchNo, uid } = req.body;
+    const rawUids = req.body.uids ?? req.body.uidList ?? req.body['uids[]'] ?? uid;
+
+    if (!taskId) {
+      return Response.error(res, 'taskId 不能为空', -1, null, 400);
+    }
+
+    if (!batchNo) {
+      return Response.error(res, 'batchNo 不能为空', -1, null, 400);
+    }
+    //判断taskID是否存在
+    const task = await redis.get(`task:${taskId}`);
+    if (!task) {
+      return Response.error(res, 'taskId 不存在', -1, null, 400);
+    }
+    const result = await enqueueTaskUids(user.uid, taskId, batchNo, rawUids);
+
+    return Response.success(res, {
+      ...result,
+      userId: user.uid,
+    }, '任务添加成功', 0);
+  } catch (error) {
+    console.error('添加任务失败:', error);
+    return Response.error(res, error.message || '添加任务失败', -1, null, 500);
   }
 });
 
@@ -563,17 +661,10 @@ app.get('/api/cookies/queue', async (req, res) => {
     // 获取分页数据
     const result = await CookiesQueue.getCookiesList(page, pageSize, priority);
 
-    res.json({
-      success: true,
-      ...result
-    });
+    return Response.success(res, result, '查询成功', 0);
   } catch (error) {
     console.error('获取 Cookies 队列失败:', error);
-    res.status(500).json({
-      success: false,
-      message: '获取队列失败',
-      error: error.message
-    });
+    return Response.error(res, '获取队列失败', -1, { error: error.message }, 500);
   }
 });
 
@@ -590,17 +681,10 @@ app.get('/api/cookies/queue/count', async (req, res) => {
 
     const total = await CookiesQueue.getQueueLength(priority);
 
-    res.json({
-      success: true,
-      total
-    });
+    return Response.success(res, { total }, '查询成功', 0);
   } catch (error) {
     console.error('获取队列总数失败:', error);
-    res.status(500).json({
-      success: false,
-      message: '获取总数失败',
-      error: error.message
-    });
+    return Response.error(res, '获取总数失败', -1, { error: error.message }, 500);
   }
 });
 
@@ -615,23 +699,13 @@ app.get('/api/cookies/queue/:id', async (req, res) => {
     const cookie = await CookiesQueue.getCookieById(parseInt(id));
 
     if (cookie) {
-      res.json({
-        success: true,
-        data: cookie
-      });
+      return Response.success(res, cookie, '查询成功', 0);
     } else {
-      res.status(404).json({
-        success: false,
-        message: 'Cookie 不存在'
-      });
+      return Response.error(res, 'Cookie 不存在', -1, null, 404);
     }
   } catch (error) {
     console.error('获取 Cookie 失败:', error);
-    res.status(500).json({
-      success: false,
-      message: '获取 Cookie 失败',
-      error: error.message
-    });
+    return Response.error(res, '获取 Cookie 失败', -1, { error: error.message }, 500);
   }
 });
 
@@ -646,23 +720,13 @@ app.get('/api/cookies/queue/:id/status', async (req, res) => {
     const status = await CookiesQueue.getCookieStatus(parseInt(id));
 
     if (status) {
-      res.json({
-        success: true,
-        data: status
-      });
+      return Response.success(res, status, '查询成功', 0);
     } else {
-      res.status(404).json({
-        success: false,
-        message: 'Cookie 不存在'
-      });
+      return Response.error(res, 'Cookie 不存在', -1, null, 404);
     }
   } catch (error) {
     console.error('获取 Cookie 状态失败:', error);
-    res.status(500).json({
-      success: false,
-      message: '获取 Cookie 状态失败',
-      error: error.message
-    });
+    return Response.error(res, '获取 Cookie 状态失败', -1, { error: error.message }, 500);
   }
 });
 
@@ -676,17 +740,10 @@ app.delete('/api/cookies/queue/:id', async (req, res) => {
 
     await CookiesQueue.removeCookie(parseInt(id));
 
-    res.json({
-      success: true,
-      message: 'Cookie 已从队列中移除'
-    });
+    return Response.success(res, null, 'Cookie 已从队列中移除', 0);
   } catch (error) {
     console.error('移除 Cookie 失败:', error);
-    res.status(500).json({
-      success: false,
-      message: '移除 Cookie 失败',
-      error: error.message
-    });
+    return Response.error(res, '移除 Cookie 失败', -1, { error: error.message }, 500);
   }
 });
 
@@ -694,20 +751,14 @@ app.delete('/api/cookies/queue/:id', async (req, res) => {
 
 // 404 处理
 app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: '路由不存在'
-  });
+  return Response.error(res, '路由不存在', -1, null, 404);
 });
 
 // 全局错误处理
 app.use((err, req, res, next) => {
   console.error('服务器错误:', err);
-  res.status(err.status || 500).json({
-    success: false,
-    message: err.message || '服务器内部错误',
-    ...(config.env === 'dev' && { stack: err.stack })
-  });
+  const errorData = config.env === 'dev' ? { stack: err.stack } : null;
+  return Response.error(res, err.message || '服务器内部错误', -1, errorData, err.status || 500);
 });
 
 // ==================== 启动服务器 ====================

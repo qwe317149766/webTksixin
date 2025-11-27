@@ -105,12 +105,12 @@ class CurlHttpSdk extends EventEmitter {
     }
 
     // =================== 连接池管理 ===================
-    createConnection(baseProxyUrl) {
+	createConnection(baseProxyUrl) {
         const id = this.nextConnectionId++;
         let modifiedProxyUrl = baseProxyUrl;
 
         const match = baseProxyUrl.match(/^(socks5h?:\/\/|http:\/\/|https:\/\/)([^:]+)(:.*)/i);
-        if (this.modifyProxyUsername && match && match[1].startsWith('socks')) {
+		if (this.modifyProxyUsername && match && match[1].startsWith('socks')) {
             const [, protocol, username, rest] = match;
             const randomId = Math.floor(Math.random() * 100000);
             modifiedProxyUrl = `${protocol}${username}-conn${id}-${randomId}${rest}`;
@@ -118,24 +118,24 @@ class CurlHttpSdk extends EventEmitter {
 
         Log.info(`[CurlHttpSdk] 创建连接 ${id}，代理: ${modifiedProxyUrl}`);
 
-        return {
-            id,
-            originalProxyUrl: baseProxyUrl,
-            proxyUrl: modifiedProxyUrl,
+		return {
+			id,
+			originalProxyUrl: baseProxyUrl,
+			proxyUrl: modifiedProxyUrl,
             activeRequests: 0,
             totalRequests: 0,
             failureCount: 0,
-            lastUsedAt: Date.now(),
-            createdAt: Date.now(),
-            isHealthy: true,
+			lastUsedAt: Date.now(),
+			createdAt: Date.now(),
+			isHealthy: true,
             proxyID: null
         };
-    }
+	}
 
-    initializeConnectionPool(baseProxyUrl) {
+	initializeConnectionPool(baseProxyUrl) {
         if (!this.connectionPool.some(c => c.originalProxyUrl === baseProxyUrl)) {
             const pool = Array.from({ length: CONNECTION_POOL_CONFIG.INITIAL_SIZE },
-                () => this.createConnection(baseProxyUrl)
+			() => this.createConnection(baseProxyUrl)
             );
             this.connectionPool.push(...pool);
             Log.info(`[CurlHttpSdk] 初始化代理池 (${baseProxyUrl})，初始大小: ${pool.length}`);
@@ -215,8 +215,8 @@ class CurlHttpSdk extends EventEmitter {
             handle.setOpt('HTTPHEADER', Object.entries(headers).map(([k, v]) => `${k}: ${v}`));
         }
 
-        if (body != null) {
-            if (body instanceof Uint8Array || body instanceof ArrayBuffer) {
+			if (body != null) {
+				if (body instanceof Uint8Array || body instanceof ArrayBuffer) {
                 const buf = Buffer.from(body);
                 let pos = 0;
 				console.log("CurlFeature:",CurlFeature)
@@ -229,9 +229,9 @@ class CurlHttpSdk extends EventEmitter {
                     pos += written;
                     return written;
                 });
-            } else if (typeof body === 'object') {
+				} else if (typeof body === 'object') {
                 handle.setOpt('POSTFIELDS', JSON.stringify(body));
-            } else {
+				} else {
                 handle.setOpt('POSTFIELDS', body);
             }
         }
