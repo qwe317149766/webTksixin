@@ -1,4 +1,5 @@
-const redis = require('../config/redis');
+// 余额相关操作使用鉴权 Redis（远程服务器）
+const { authRedis } = require('../config/redis');
 // 使用远程 MySQL（authPool）读取账户余额
 const { authPool: authMysqlPool } = require('../config/database');
 
@@ -11,7 +12,8 @@ const QUOTA_COLUMN = 'score_num'; // 余额字段名，可根据实际情况修�
  * 从 Redis 获取余额
  */
 async function getQuotaFromRedis(uid) {
-  const value = await redis.hget(QUOTA_KEY, uid);
+  // 使用鉴权 Redis 获取余额
+  const value = await authRedis.hget(QUOTA_KEY, uid);
   return value !== null ? Number(value) : null;
 }
 
@@ -41,8 +43,8 @@ async function getQuotaFromDB(uid) {
  */
 async function getPayConfigFromDB(uid) {
   try {
-    //先从redis中获取
-    const redisConfig = await redis.hget(QUOTA_CONFIG_KEY, uid);
+    //先从鉴权 Redis 中获取
+    const redisConfig = await authRedis.hget(QUOTA_CONFIG_KEY, uid);
     if(redisConfig) {
       try {
         const config = JSON.parse(redisConfig);
@@ -97,8 +99,8 @@ async function getPayConfigFromDB(uid) {
       unit_score = Number(systemConfig.unit_score) || 1      //每积分
       score_price = Number(systemConfig.score_price) || 0.03 //等于3分钱
     } 
-    //将值写入redis 然后从redis中获取
-    await redis.hset(QUOTA_CONFIG_KEY, uid, JSON.stringify({
+    //将值写入鉴权 Redis
+    await authRedis.hset(QUOTA_CONFIG_KEY, uid, JSON.stringify({
       proxy_price,
       unit_proxy,
       unit_sixin,
@@ -138,18 +140,19 @@ async function getQuota(uid) {
   // Redis 没有，查数据库
   const dbQuota = await getQuotaFromDB(uid);
   
-  // 将数据库余额同步到 Redis
+  // 将数据库余额同步到鉴权 Redis
   if (dbQuota > 0) {
-    await redis.hset(QUOTA_KEY, uid, dbQuota);
+    await authRedis.hset(QUOTA_KEY, uid, dbQuota);
   }
   
   return dbQuota;
 }
 
 async function ensureQuotaRecord(uid) {
-  const exists = await redis.hexists(QUOTA_KEY, uid);
+  // 使用鉴权 Redis
+  const exists = await authRedis.hexists(QUOTA_KEY, uid);
   if (!exists) {
-    await redis.hset(QUOTA_KEY, uid, 0);
+    await authRedis.hset(QUOTA_KEY, uid, 0);
   }
 }
 
@@ -198,7 +201,8 @@ async function deductQuotaAtomic(uid, amount = 1) {
   `;
 
   try {
-    const result = await redis.eval(
+    // 使用鉴权 Redis 执行 Lua 脚本
+    const result = await authRedis.eval(
       luaScript,
       1, // KEYS 数量
       QUOTA_KEY, // KEYS[1]
@@ -209,15 +213,15 @@ async function deductQuotaAtomic(uid, amount = 1) {
     const [success, quota, status] = result;
 
     if (status === 'not_found') {
-      // Redis 中没有余额，尝试从数据库加载
+      // 鉴权 Redis 中没有余额，尝试从数据库加载
       const dbQuota = await getQuotaFromDB(uid);
       if (dbQuota > 0) {
-        // 同步到 Redis
-        await redis.hset(QUOTA_KEY, uid, dbQuota);
+        // 同步到鉴权 Redis
+        await authRedis.hset(QUOTA_KEY, uid, dbQuota);
         
         // 再次尝试扣减
         if (dbQuota >= amount) {
-          const finalQuota = await redis.hincrby(QUOTA_KEY, uid, -amount);
+          const finalQuota = await authRedis.hincrby(QUOTA_KEY, uid, -amount);
           return {
             success: true,
             quota: finalQuota,
@@ -263,8 +267,148 @@ async function deductQuotaAtomic(uid, amount = 1) {
 
 
 async function addQuota(uid, amount = 1) {
-  const quota = await redis.hincrby(QUOTA_KEY, uid, amount);
+  // 使用鉴权 Redis 增加余额
+  const quota = await authRedis.hincrby(QUOTA_KEY, uid, amount);
   return quota;
+}
+
+/**
+ * 扣减余额、冻结金额并生成账单（单事务完成）
+ * @param {Object} params
+ * @param {string|number} params.uid - 用户ID
+ * @param {number} params.amount - 扣减金额
+ * @param {string} params.taskId - 任务ID
+ * @param {string} params.title - 账单标题
+ * @param {string} params.mark - 备注
+ * @returns {Promise<{success: boolean, data?: Object, message?: string}>}
+ */
+async function deductFreezeAndCreateBill(params) {
+  const {
+    uid,
+    amount,
+    taskId,
+    title = '任务消费',
+    mark = '',
+    buyNum = 0,
+    payConfig = {},
+    billType = 'sixin',
+    billCategory = 'frozen',
+    billOrderId = '',
+    completedNum = 0,
+  } = params;
+
+  if (!uid || amount <= 0) {
+    return { success: false, message: '参数错误' };
+  }
+
+  let connection;
+  try {
+    // 获取连接并开启事务
+    connection = await authMysqlPool.getConnection();
+    await connection.beginTransaction();
+
+    // 1. 查询当前余额（FOR UPDATE 行级锁）
+    const [rows] = await connection.execute(
+      `SELECT ${QUOTA_COLUMN}, frozen_score_num FROM ${QUOTA_TABLE} WHERE id = ? FOR UPDATE`,
+      [uid]
+    );
+
+    if (rows.length === 0) {
+      await connection.rollback();
+      return { success: false, message: '用户不存在' };
+    }
+
+    const currentScore = Number(rows[0][QUOTA_COLUMN] || 0);
+    const currentFrozen = Number(rows[0].frozen_score_num || 0);
+
+    if (currentScore < amount) {
+      await connection.rollback();
+      return { success: false, message: '余额不足', beforeScore: currentScore };
+    }
+
+    // 2. 扣减余额，增加冻结金额（条件更新）
+    const [updateResult] = await connection.execute(
+      `UPDATE ${QUOTA_TABLE} 
+        SET ${QUOTA_COLUMN} = ${QUOTA_COLUMN} - ?, 
+            frozen_score_num = frozen_score_num + ?, 
+            update_time = UNIX_TIMESTAMP() 
+        WHERE id = ? AND ${QUOTA_COLUMN} - ? >= 0`,
+      [amount, amount, uid, amount]
+    );
+
+    if (updateResult.affectedRows === 0) {
+      await connection.rollback();
+      return { success: false, message: '余额不足或并发冲突', beforeScore: currentScore };
+    }
+
+    const newScore = currentScore - amount;
+    const newFrozen = currentFrozen + amount;
+
+    // 3. 创建账单（和扣减在同一事务内）
+    const now = Math.floor(Date.now() / 1000);
+    const [billResult] = await connection.execute(
+      `INSERT INTO uni_user_bill (
+          bill_type,
+          bill_category,
+          taskId,
+          num,
+          pm,
+          uid,
+          before_num,
+          after_num,
+          bill_order_id,
+          buy_num,
+          pay_config,
+          complate_num,
+          status,
+          create_time,
+          update_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        billType,
+        billCategory,
+        taskId || '',
+        amount,
+        0, // pm=0 支出
+        uid,
+        currentScore,
+        newScore,
+        billOrderId || taskId || '',
+        buyNum,
+        typeof payConfig === 'string' ? payConfig : JSON.stringify(payConfig || {}),
+        completedNum,
+        0, // 0=待结算
+        now,
+        now,
+      ]
+    );
+
+    await connection.commit();
+
+    // 同步更新鉴权 Redis 中的余额（异步，不影响事务）
+    await authRedis.hset(QUOTA_KEY, uid, newScore);
+
+    return {
+      success: true,
+      data: {
+        beforeScore: currentScore,
+        afterScore: newScore,
+        frozenScore: newFrozen,
+        deductAmount: amount,
+        billId: billResult.insertId,
+      },
+    };
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
+    console.error(`[Quota] 扣减并创建账单失败 (UID: ${uid}, Amount: ${amount}):`, error.message);
+    return { success: false, message: `扣减失败: ${error.message}` };
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
 }
 
 module.exports = {
@@ -272,6 +416,7 @@ module.exports = {
   ensureQuotaRecord,
   deductQuotaAtomic, // 原子性扣减（推荐使用）
   addQuota,
-  getPayConfigFromDB
+  getPayConfigFromDB,
+  deductFreezeAndCreateBill, // 扣减、冻结并生成账单（组合操作）
 };
 

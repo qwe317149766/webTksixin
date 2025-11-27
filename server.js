@@ -535,6 +535,15 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
       return Response.error(res, '获取支付配置失败', -1, null, 500);
     }
 
+    //从uni_user_bill中检查任务状态
+    const [billResult] = await mysqlPool.execute(
+      `SELECT * FROM uni_user_bill WHERE uid = ? AND taskId = ?`,
+      [userId, taskId]
+    );
+    if (billResult.length > 0) {
+      return Response.error(res, '任务已存在', -1, null, 400);
+    }
+
     console.log("[payConfig]:",payConfig)
     //计算代理费用：总数 / 每单位代理数 * 每单位价格
     const proxyCost = (normalizedTotal / payConfig.unit_proxy) * payConfig.proxy_price;
@@ -556,27 +565,67 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
       }, 400);
     }
     console.log("[totalCost]:",totalCost)
-    // 余额足够，返回成功（不添加任务，仅验证）
-    const remainingQuota = currentQuota - totalCost;
+    
     //创建taskID
-    //根据taskID缓存提交的信息
     //先判断有没有传taskID 有传则更新 没有则新增
-    if(!taskId) {
-      taskId = GuidUtil.generate();
+    taskId = GuidUtil.generate();
+
+    // 扣减余额、冻结金额并生成账单
+    const deductResult = await QuotaService.deductFreezeAndCreateBill({
+      uid: userId,
+      amount: totalCost,
+      taskId: taskId,
+      title: '私信任务消费',
+      mark: `发送数量: ${normalizedTotal}, 代理费: ${proxyCost.toFixed(2)}, 发送费: ${sendCost.toFixed(2)}`,
+      buyNum: normalizedTotal,
+      payConfig: {
+        total: normalizedTotal,
+        proxyCost,
+        sendCost,
+        totalCost,
+        config: payConfig,
+      },
+      billType: 'sixin',
+      billCategory: 'frozen',
+      billOrderId: GuidUtil.generate(),
+      completedNum: 0,
+    });
+
+    if (!deductResult.success) {
+      return Response.error(res, deductResult.message || '扣减余额失败', -1, null, 400);
     }
+
+    const { beforeScore, afterScore, frozenScore, billId } = deductResult.data;
+    
     //将提交的信息缓存到redis 
     await redis.setex(`task:${taskId}`, 86400, JSON.stringify({
       userId,
       total: normalizedTotal,
-      payConfig:payConfig,
+      payConfig: payConfig,
       content,
       msgType,
       proxy,
       sendType,
       taskId,
-      message: '余额验证通过'
+      totalCost,
+      proxyCost,
+      sendCost,
+      billId,
+      status: 'frozen', // 已冻结
+      message: '余额扣减成功，已冻结待结算'
     }));
-    return Response.success(res, { taskId,remainingQuota,totalCost,currentQuota,payConfig}, '任务校验通过', 0);
+
+    return Response.success(res, { 
+      taskId,
+      beforeScore,
+      afterScore,
+      frozenScore,
+      totalCost,
+      proxyCost,
+      sendCost,
+      billId,
+      payConfig
+    }, '任务提交成功，余额已扣减并冻结', 0);
 
   } catch (error) {
     console.error('提交任务失败:', error);
@@ -619,6 +668,14 @@ app.post('/api/v1/tk-task/enqueue', async (req, res) => {
 
     if (!taskId) {
       return Response.error(res, 'taskId 不能为空', -1, null, 400);
+    }
+
+    const [billResult] = await mysqlPool.execute(
+      `SELECT * FROM uni_user_bill WHERE uid = ? AND taskId = ?`,
+      [uid, taskId]
+    );
+    if (billResult.length < 0) {
+      return Response.error(res, '任务不存在', -1, null, 400);
     }
 
     if (!batchNo) {
