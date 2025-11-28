@@ -6,6 +6,7 @@ const rateLimit = require('express-rate-limit');
 const config = require('./config');
 
 const mysqlPool = require('./config/database');
+const authMysqlPool = mysqlPool.authPool;
 const redis = require('./config/redis');
 const { sendText } = require('./tiktokWeb/TiktokApi');
 const CookiesQueue = require('./utils/cookiesQueue');
@@ -583,7 +584,7 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
 
     //从uni_user_bill中检查任务状态（只有当 taskId 存在时才检查）
     if (taskId !== undefined && taskId !== null && taskId !== '') {
-      const [billResult] = await mysqlPool.execute(
+      const [billResult] = await authMysqlPool.execute(
         `SELECT * FROM uni_user_bill WHERE uid = ? AND taskId = ?`,
         [userId, taskId]
       );
@@ -721,7 +722,7 @@ app.post('/api/v1/tk-task/enqueue', async (req, res) => {
       return Response.error(res, 'taskId 不能为空', -1, null, 400);
     }
 
-    const [billResult] = await mysqlPool.execute(
+    const [billResult] = await authMysqlPool.execute(
       `SELECT * FROM uni_user_bill WHERE uid = ? AND taskId = ?`,
       [uid, taskId]
     );
