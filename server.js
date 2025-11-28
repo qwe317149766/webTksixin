@@ -585,7 +585,7 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
     //从uni_user_bill中检查任务状态（只有当 taskId 存在时才检查）
     if (taskId !== undefined && taskId !== null && taskId !== '') {
       const [billResult] = await authMysqlPool.execute(
-        `SELECT * FROM uni_user_bill WHERE uid = ? AND taskId = ?`,
+        `SELECT id FROM uni_user_bill WHERE uid = ? AND taskId = ? LIMIT 1`,
         [userId, taskId]
       );
       if (billResult.length > 0) {
@@ -723,10 +723,10 @@ app.post('/api/v1/tk-task/enqueue', async (req, res) => {
     }
 
     const [billResult] = await authMysqlPool.execute(
-      `SELECT * FROM uni_user_bill WHERE uid = ? AND taskId = ?`,
+      `SELECT id FROM uni_user_bill WHERE uid = ? AND taskId = ? LIMIT 1`,
       [uid, taskId]
     );
-    if (billResult.length < 0) {
+    if (billResult.length <= 0) {
       return Response.error(res, '任务不存在', -1, null, 400);
     }
 

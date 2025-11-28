@@ -179,9 +179,35 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore) {
     });
 
     // 监听结果
-    batchRequester.on('result', (result) => {
+    batchRequester.on('result', async (result) => {
         console.log('发送结果:', result);
         //判断各种状态 执行更新数据库 发送统计数据 扣减余额
+        if (result.code === 0) {
+          //更新redis中的待私信总数 -1 调用 quotaService 去减去余额
+          await quotaService.decreaseQuota(result.uid, 1);
+          //更新redis中的待私信总数 -1
+          await redis.decr(`task:${taskId}:pending`);
+          //更新数据库中的任务状态
+          //发送统计数据
+          await sendStatisticData(result.uid, taskId, result.cookieId);
+          //发送消息到前端
+        } else if (result.code === 1) {
+          //完成任务则停止队列并发送消息到前端
+          await TaskStore.stopTask(taskId);
+          socketManager.emitToUid(result.uid, 'task:status', { status: 'completed', message: '任务已完成' });
+        } else if (result.code === -10002) {
+          //网络错误则重写投递任务
+          batchRequester.retry(result.task);
+        } else if (result.code === -10003) {
+          //CK异常则更新CK状态
+          await dbConnection.execute(
+            `UPDATE ${tableName} SET status = 0 WHERE id = ?`,
+            [result.cookieId]
+          );
+        } else {
+          //其他错误则记录日志
+          console.error(`[Task] 未知错误 (ID: ${result.cookieId}):`, result);
+        }
     });
 
     batchRequester.on('done', () => {
