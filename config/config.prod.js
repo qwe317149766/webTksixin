@@ -8,9 +8,9 @@ module.exports = {
   authMysql: {
     host: '217.77.12.171',
     port: 3306,
-    user: 'uni_fb',
+    user: 'ins_fb',
     password: 'G4fMJZCkjHLLZDNs',
-    database: 'uni_fb',
+    database: 'ins_fb',
     connectionLimit: 100,
     queueLimit: 0,
     waitForConnections: true,

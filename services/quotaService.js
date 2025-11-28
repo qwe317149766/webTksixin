@@ -349,6 +349,8 @@ async function deductFreezeAndCreateBill(params) {
     const [billResult] = await connection.execute(
       `INSERT INTO uni_user_bill (
           bill_type,
+          bill_mark,
+          bill_title,
           bill_category,
           taskId,
           num,
@@ -366,6 +368,8 @@ async function deductFreezeAndCreateBill(params) {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         billType,
+        mark,
+        title,
         billCategory,
         taskId || '',
         amount,

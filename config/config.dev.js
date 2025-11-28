@@ -8,9 +8,9 @@ module.exports = {
   authMysql: {
     host: '217.77.12.171',
     port: 3306,
-    user: 'uni_fb',
+    user: 'ins_fb',
     password: 'G4fMJZCkjHLLZDNs',
-    database: 'uni_fb',
+    database: 'ins_fb',
     connectionLimit: 100,
     queueLimit: 0,
     waitForConnections: true,
@@ -59,7 +59,7 @@ module.exports = {
   redis: {
     host: '127.0.0.1',
     port: 6379,
-    password: '',
+    password: 'a123456',
     db: 0,
     maxRetriesPerRequest: 3,
     retryStrategy: (times) => {
