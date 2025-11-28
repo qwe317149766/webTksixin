@@ -127,9 +127,10 @@ function normalizeUids(rawUids) {
  * @param {string} taskId
  * @param {string} batchNo
  * @param {*} rawUids - 原始 UID 列表（字符串/数组等）
+ * @param {Object} batchInfo - 批次信息（content, msgType, proxy, sendType）
  * @returns {Promise<{userId: string, taskId: string, batchNo: string, added: number, duplicated: number, total: number}>}
  */
-async function enqueueTaskUids(userId, taskId, batchNo, rawUids) {
+async function enqueueTaskUids(userId, taskId, batchNo, rawUids, batchInfo = null) {
   if (userId === undefined || userId === null) {
     throw new Error('userId 不能为空');
   }
@@ -159,6 +160,8 @@ async function enqueueTaskUids(userId, taskId, batchNo, rawUids) {
     taskId: normalizedTaskId,
     userId: normalizedUserId,
     uids: uidList,
+    // 如果有批次信息，传递给 addTask
+    ...(batchInfo && { batchInfo }),
   });
 
   return {
@@ -541,8 +544,19 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
     //   return Response.error(res, 'uids 参数不能为空，支持数组或以逗号/空格分隔的字符串', -1, null, 400);
     // }
 
-    if (!content || typeof content !== 'string' || !content.trim()) {
-      return Response.error(res, 'content 不能为空', -1, null, 400);
+    // content 支持字符串或数组
+    let contentArray = [];
+    if (Array.isArray(content)) {
+      // 如果是数组，过滤空值并验证
+      contentArray = content.filter(item => item && typeof item === 'string' && item.trim());
+      if (contentArray.length === 0) {
+        return Response.error(res, 'content 数组不能为空，至少需要一个有效的内容', -1, null, 400);
+      }
+    } else if (typeof content === 'string' && content.trim()) {
+      // 如果是字符串，转换为数组
+      contentArray = [content.trim()];
+    } else {
+      return Response.error(res, 'content 不能为空，支持字符串或字符串数组', -1, null, 400);
     }
 
     if (msgType === undefined || msgType === null || Number.isNaN(Number(msgType))) {
@@ -634,7 +648,7 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
       userId,
       total: normalizedTotal,
       payConfig: payConfig,
-      content,
+      content: contentArray, // 保存为数组
       msgType,
       proxy,
       sendType,
@@ -714,11 +728,25 @@ app.post('/api/v1/tk-task/enqueue', async (req, res) => {
       return Response.error(res, 'batchNo 不能为空', -1, null, 400);
     }
     //判断taskID是否存在
-    const task = await redis.get(`task:${taskId}`);
-    if (!task) {
+    const taskStr = await redis.get(`task:${taskId}`);
+    if (!taskStr) {
       return Response.error(res, 'taskId 不存在', -1, null, 400);
     }
-    const result = await enqueueTaskUids(user.uid, taskId, batchNo, rawUids);
+    
+    let taskData;
+    try {
+      taskData = JSON.parse(taskStr);
+    } catch (error) {
+      return Response.error(res, '任务数据格式错误', -1, null, 400);
+    }
+    
+    // 保存批次信息（包含 content 数组）
+    const result = await enqueueTaskUids(user.uid, taskId, batchNo, rawUids, {
+      content: taskData.content || [], // content 数组
+      msgType: taskData.msgType,
+      proxy: taskData.proxy,
+      sendType: taskData.sendType,
+    });
 
     return Response.success(res, {
       ...result,

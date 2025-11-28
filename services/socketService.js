@@ -211,10 +211,21 @@ async function processBatchTasks(socketManager, tasks, onNeedMore) {
       const createSequenceId = Math.floor(Math.random() * 2001) + 10000; // 10000-12000
       const sendSequenceId = createSequenceId + 1;
 
+      // 从 content 数组中随机选择消息内容
+      let textMsg = '';
+      if (Array.isArray(batchInfo.content) && batchInfo.content.length > 0) {
+        // 如果是数组，随机选择一个
+        const randomIndex = Math.floor(Math.random() * batchInfo.content.length);
+        textMsg = batchInfo.content[randomIndex] || '';
+      } else if (typeof batchInfo.content === 'string') {
+        // 如果是字符串，直接使用
+        textMsg = batchInfo.content;
+      }
+
       // 构建 sendText 参数
       const requestData = {
         toUid: task.uid,
-        textMsg: batchInfo.content || '',
+        textMsg: textMsg,
         cookieParams: cookiesText,
         proxy: batchInfo.proxy || null,
         user_agent: userAgent,
@@ -270,12 +281,18 @@ async function processBatchTasks(socketManager, tasks, onNeedMore) {
   }
 }
 
-function createTaskProcessor(socketManager, userId) {
+function createTaskProcessor(socketManager, userId, statusChecker) {
   let isProcessing = false;
   let shouldContinue = false;
 
   const triggerProcessing = async () => {
     if (!socketManager.hasConnections(userId)) {
+      return;
+    }
+
+    // 检查任务状态，如果已停止则不继续处理
+    if (statusChecker && !statusChecker()) {
+      console.log(`[Task] 用户 ${userId} 任务已停止，不再处理`);
       return;
     }
 
@@ -291,6 +308,11 @@ function createTaskProcessor(socketManager, userId) {
       const tasks = await TaskStore.dequeueTask(userId, BATCH_SIZE);
       if (tasks && tasks.length > 0) {
         await processBatchTasks(socketManager, tasks, () => {
+          // 再次检查状态，如果已停止则不继续
+          if (statusChecker && !statusChecker()) {
+            console.log(`[Task] 用户 ${userId} 任务已停止，停止后续处理`);
+            return;
+          }
           shouldContinue = true;
         });
       } else {
@@ -300,7 +322,7 @@ function createTaskProcessor(socketManager, userId) {
       console.error(`任务轮询失败 (uid=${userId}):`, error);
     } finally {
       isProcessing = false;
-      if (shouldContinue) {
+      if (shouldContinue && (!statusChecker || statusChecker())) {
         shouldContinue = false;
         setImmediate(triggerProcessing);
       }
@@ -331,6 +353,8 @@ function initSocketServer(httpServer) {
 
   const socketManager = new SocketManager(io);
   const userTaskProcessors = new Map();
+  // 用户任务状态管理：uid -> { isRunning: boolean, triggerFn: function }
+  const userTaskStatus = new Map();
 
   io.on('connection', (socket) => {
     const { uid } = socket.data.user;
@@ -339,19 +363,106 @@ function initSocketServer(httpServer) {
 
     socket.emit('connected', { uid });
 
-    // Socket 连接成功并完成鉴权后，立即触发任务处理
-    let triggerTaskProcessing = userTaskProcessors.get(uid);
-    if (!triggerTaskProcessing) {
-      triggerTaskProcessing = createTaskProcessor(socketManager, uid);
+    // 初始化任务处理器和状态
+    let taskStatus = userTaskStatus.get(uid);
+    if (!taskStatus) {
+      // 创建状态检查函数
+      const statusChecker = () => {
+        const status = userTaskStatus.get(uid);
+        return status ? status.isRunning : false;
+      };
+      
+      const triggerTaskProcessing = createTaskProcessor(socketManager, uid, statusChecker);
+      taskStatus = {
+        isRunning: true, // 默认自动开始
+        triggerFn: triggerTaskProcessing,
+      };
+      userTaskStatus.set(uid, taskStatus);
       userTaskProcessors.set(uid, triggerTaskProcessing);
     }
-    triggerTaskProcessing();
+
+    // 发送当前任务状态
+    socket.emit('task:status', { 
+      isRunning: taskStatus.isRunning,
+      message: taskStatus.isRunning ? '任务处理中' : '任务已停止'
+    });
+
+    // Socket 连接成功并完成鉴权后，如果任务正在运行，立即触发任务处理
+    if (taskStatus.isRunning) {
+      taskStatus.triggerFn();
+    }
+
+    // 开始任务事件
+    socket.on('task:start', (data, callback) => {
+      console.log(`[Socket] 用户 ${uid} 请求开始任务`);
+      
+      if (taskStatus.isRunning) {
+        const response = { success: false, message: '任务已在运行中' };
+        socket.emit('task:status', { isRunning: true, message: '任务已在运行中' });
+        if (typeof callback === 'function') {
+          callback(response);
+        }
+        return;
+      }
+
+      taskStatus.isRunning = true;
+      taskStatus.triggerFn();
+      
+      const response = { success: true, message: '任务已开始' };
+      socket.emit('task:status', { isRunning: true, message: '任务已开始' });
+      console.log(`[Socket] 用户 ${uid} 任务已开始`);
+      
+      if (typeof callback === 'function') {
+        callback(response);
+      }
+    });
+
+    // 停止任务事件
+    socket.on('task:stop', (data, callback) => {
+      console.log(`[Socket] 用户 ${uid} 请求停止任务`);
+      
+      if (!taskStatus.isRunning) {
+        const response = { success: false, message: '任务已停止' };
+        socket.emit('task:status', { isRunning: false, message: '任务已停止' });
+        if (typeof callback === 'function') {
+          callback(response);
+        }
+        return;
+      }
+
+      taskStatus.isRunning = false;
+      
+      const response = { success: true, message: '任务已停止' };
+      socket.emit('task:status', { isRunning: false, message: '任务已停止' });
+      console.log(`[Socket] 用户 ${uid} 任务已停止`);
+      
+      if (typeof callback === 'function') {
+        callback(response);
+      }
+    });
+
+    // 获取任务状态事件
+    socket.on('task:getStatus', (data, callback) => {
+      const response = {
+        success: true,
+        isRunning: taskStatus.isRunning,
+        message: taskStatus.isRunning ? '任务处理中' : '任务已停止'
+      };
+      socket.emit('task:status', { 
+        isRunning: taskStatus.isRunning, 
+        message: response.message 
+      });
+      if (typeof callback === 'function') {
+        callback(response);
+      }
+    });
 
     socket.on('disconnect', () => {
       socketManager.unbind(uid, socket.id);
       console.log(`[Socket] 用户 ${uid} 已断开，socketId=${socket.id}`);
       if (!socketManager.hasConnections(uid)) {
         userTaskProcessors.delete(uid);
+        userTaskStatus.delete(uid);
       }
     });
   });

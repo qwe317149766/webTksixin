@@ -31,8 +31,22 @@ class TaskStore {
     if (!batchNo) return null;
     const info = await redis.hgetall(this.getBatchInfoKey(batchNo));
     if (!info || Object.keys(info).length === 0) return null;
+    
+    // 解析 content，支持数组（JSON 格式）或字符串
+    let content = info.content || '';
+    try {
+      // 尝试解析为 JSON（如果是数组）
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        content = parsed;
+      }
+    } catch (e) {
+      // 如果不是 JSON，保持为字符串
+      content = content || '';
+    }
+    
     return {
-      content: info.content || '',
+      content: content, // 可能是字符串或数组
       msgType: Number(info.msgType ?? 0),
       proxy: info.proxy || '',
       sendType: Number(info.sendType ?? 0),
@@ -46,8 +60,18 @@ class TaskStore {
     const existingInfo = await redis.hgetall(infoKey);
     const now = Date.now();
 
+    // 处理 content：如果是数组，序列化为 JSON；如果是字符串，直接使用
+    let contentValue = payload.content ?? existingInfo.content ?? '';
+    if (Array.isArray(contentValue)) {
+      contentValue = JSON.stringify(contentValue);
+    } else if (typeof contentValue === 'string') {
+      // 保持为字符串
+    } else {
+      contentValue = '';
+    }
+
     const info = {
-      content: payload.content ?? existingInfo.content ?? '',
+      content: contentValue,
       msgType: payload.msgType ?? Number(existingInfo.msgType ?? 0),
       proxy: payload.proxy ?? existingInfo.proxy ?? '',
       sendType: payload.sendType ?? Number(existingInfo.sendType ?? 0),
@@ -121,6 +145,11 @@ class TaskStore {
     const existingSet = new Set(existingUids || []);
 
     const queueKey = this.getQueueKey(userId);
+
+    // 如果有批次信息，保存到 Redis
+    if (payload.batchInfo) {
+      await this.ensureBatchInfo(batchNo, payload.batchInfo);
+    }
 
     const newTasks = [];
     for (const uid of uniqueIncomingUids) {
