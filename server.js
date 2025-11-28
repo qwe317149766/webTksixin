@@ -582,17 +582,6 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
       return Response.error(res, '获取支付配置失败', -1, null, 500);
     }
 
-    //从uni_user_bill中检查任务状态（只有当 taskId 存在时才检查）
-    if (taskId !== undefined && taskId !== null && taskId !== '') {
-      const [billResult] = await authMysqlPool.execute(
-        `SELECT id FROM uni_user_bill WHERE uid = ? AND taskId = ? LIMIT 1`,
-        [userId, taskId]
-      );
-      if (billResult.length > 0) {
-        return Response.error(res, '任务已存在', -1, null, 400);
-      }
-    }
-
     console.log("[payConfig]:",payConfig)
     //计算代理费用：总数 / 每单位代理数 * 每单位价格
     const proxyCost = (normalizedTotal / payConfig.unit_proxy) * payConfig.proxy_price;
@@ -720,14 +709,6 @@ app.post('/api/v1/tk-task/enqueue', async (req, res) => {
 
     if (!taskId) {
       return Response.error(res, 'taskId 不能为空', -1, null, 400);
-    }
-
-    const [billResult] = await authMysqlPool.execute(
-      `SELECT id FROM uni_user_bill WHERE uid = ? AND taskId = ? LIMIT 1`,
-      [uid, taskId]
-    );
-    if (billResult.length <= 0) {
-      return Response.error(res, '任务不存在', -1, null, 400);
     }
 
     if (!batchNo) {
