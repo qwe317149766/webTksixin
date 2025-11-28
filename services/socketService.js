@@ -143,6 +143,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore) {
         console.warn(`[Task] 解析任务信息失败 (taskId=${taskId}):`, e.message);
       }
     }
+  
 
     // 获取数据库连接
     dbConnection = await mysqlPool.getConnection();

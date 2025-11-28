@@ -581,13 +581,15 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
       return Response.error(res, '获取支付配置失败', -1, null, 500);
     }
 
-    //从uni_user_bill中检查任务状态
-    const [billResult] = await mysqlPool.execute(
-      `SELECT * FROM uni_user_bill WHERE uid = ? AND taskId = ?`,
-      [userId, taskId]
-    );
-    if (billResult.length > 0) {
-      return Response.error(res, '任务已存在', -1, null, 400);
+    //从uni_user_bill中检查任务状态（只有当 taskId 存在时才检查）
+    if (taskId !== undefined && taskId !== null && taskId !== '') {
+      const [billResult] = await mysqlPool.execute(
+        `SELECT * FROM uni_user_bill WHERE uid = ? AND taskId = ?`,
+        [userId, taskId]
+      );
+      if (billResult.length > 0) {
+        return Response.error(res, '任务已存在', -1, null, 400);
+      }
     }
 
     console.log("[payConfig]:",payConfig)
@@ -643,6 +645,9 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
 
     const { beforeScore, afterScore, frozenScore, billId } = deductResult.data;
     
+     //任务总数写入到redis中
+     await redis.set(`task:${taskId}:total`, normalizedTotal);
+     
     //将提交的信息缓存到redis 
     await redis.setex(`task:${taskId}`, 86400, JSON.stringify({
       userId,
