@@ -645,8 +645,8 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
 
     const { beforeScore, afterScore, frozenScore, billId } = deductResult.data;
     
-     //任务总数写入到redis中
-     await redis.set(`task:${taskId}:total`, normalizedTotal);
+    //任务总数写入到redis中
+    await redis.set(`task:total:${taskId}`, normalizedTotal);
      
     //将提交的信息缓存到redis 
     await redis.setex(`task:${taskId}`, 86400, JSON.stringify({

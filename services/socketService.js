@@ -278,6 +278,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore) {
             uid: task.uid,
             batchNo: task.batchNo,
             cookieId,
+            taskId
           };
         } catch (error) {
           return {
@@ -287,6 +288,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore) {
             uid: task.uid,
             batchNo: task.batchNo,
             cookieId,
+            taskId
           };
         }
       });
@@ -403,7 +405,7 @@ function initSocketServer(httpServer) {
     const taskKey = `${uid}:${taskId}`;
     
     const broadcastStatus = (status, message) => {
-      const payload = {
+      const payload = { 
         isRunning: status === 'running',
         status,
         message:
@@ -475,8 +477,11 @@ function initSocketServer(httpServer) {
     // 开始任务事件
     socket.on('task:start', async (data, callback) => {
       console.log(`[Socket] 用户 ${uid} 任务 ${taskId} 请求开始任务`);
-      
-      if (taskStatus.isRunning) {
+
+      const latestStatus = await TaskStore.getTaskStatus(taskId);
+      const currentStatus = latestStatus?.status || taskStatus.status;
+
+      if (currentStatus === 'running') {
         const response = { success: false, message: '任务已在运行中' };
         broadcastStatus('running', '任务已在运行中');
         if (typeof callback === 'function') {
