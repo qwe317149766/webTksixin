@@ -79,5 +79,15 @@ module.exports = {
   rateLimit: {
     windowMs: 1 * 60 * 1000,
     max: 100000,
-  }
-};
+  },
+  task: {
+    batchSize: 1, // 批量处理任务数量
+    concurrency: 1, // 并发数
+    lowThreshold: 2, // 低阈值
+    cookieRatio: {
+      multiplier: 1.5, // cookies 总数倍数（相对于 tasks.length）
+      priority1Ratio: 2/3, // priority_code=1 的比例
+      priority0Ratio: 1/3, // priority_code=0 的比例
+    },
+  },
+}
