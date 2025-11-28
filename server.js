@@ -19,6 +19,10 @@ const QuotaService = require('./services/quotaService');
 const GuidUtil = require('./utils/guid');
 
 const app = express();
+
+// 信任反向代理（只信任第一层代理，更安全）
+// 如果 Nginx 在本地，设置为 1；如果知道代理 IP，可以指定 IP 地址数组
+app.set('trust proxy', 1);
 const PORT = config.server.port;
 
 // ==================== 中间件配置 ====================

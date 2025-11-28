@@ -226,7 +226,7 @@ class TaskStore {
     const existingSet = new Set(existingUids || []);
 
     const queueKey = this.getQueueKey(userId);
-
+      console.log('queueKey', queueKey);
     // 如果有批次信息，保存到 Redis
     if (payload.batchInfo) {
       await this.ensureBatchInfo(batchNo, payload.batchInfo);
@@ -238,8 +238,52 @@ class TaskStore {
         continue;
       }
       const entry = JSON.stringify({ batchNo, taskId, uid, userId });
-      await redis.zadd(queueKey, Date.now(), entry);
-      newTasks.push({ batchNo, uid, taskId, userId });
+      try {
+        // 先检查任务是否真的存在于队列中
+        const exists = await redis.zscore(queueKey, entry);
+        if (exists !== null) {
+          // 任务确实存在，输出详细信息并强制覆盖（删除后重新添加）
+          console.log("exists:",exists)
+          console.warn(`[TaskStore] 任务已存在于队列中 (taskId: ${taskId}, uid: ${uid}, batchNo: ${batchNo})`);
+          // console.log(`[TaskStore] 队列中的任务 score: ${exists}, 将删除后重新添加`);
+          // 删除已存在的任务，然后重新添加（确保使用最新的时间戳）
+          // await redis.zrem(queueKey, entry);
+          // console.log(`[TaskStore] 已删除旧任务，准备重新添加`);
+        }else{
+          console.log(`[TaskStore] 任务不存在，准备添加`);
+        }
+        
+        // 添加任务
+        const result = await redis.zadd(queueKey, Date.now(), entry);
+        console.log("result:",result)
+        if (result === 0) {
+          // 如果返回 0，说明元素已存在（虽然我们检查过，但可能并发添加了）
+          console.log(`[TaskStore] zadd 返回 0，任务可能已被并发添加 (taskId: ${taskId}, uid: ${uid})`);
+          // 验证一下是否真的存在
+          const verifyScore = await redis.zscore(queueKey, entry);
+          if (verifyScore === null) {
+            // 实际上不存在，可能是 Redis 的异常，尝试再次添加
+            console.log(`[TaskStore] 验证发现任务不存在，尝试重新添加 (taskId: ${taskId}, uid: ${uid})`);
+            const retryResult = await redis.zadd(queueKey, Date.now(), entry);
+            if (retryResult === 1) {
+              newTasks.push({ batchNo, uid, taskId, userId });
+            } else {
+              console.error(`[TaskStore] 重试添加仍然失败 (taskId: ${taskId}, uid: ${uid})`);
+            }
+          } else {
+            // 确实存在，跳过
+            console.log(`[TaskStore] 验证确认任务已存在，跳过 (taskId: ${taskId}, uid: ${uid})`);
+          }
+          continue;
+        }
+        if (result !== 1) {
+          console.warn(`[TaskStore] zadd 返回异常值: ${result} (taskId: ${taskId}, uid: ${uid})`);
+        }
+        newTasks.push({ batchNo, uid, taskId, userId });
+      } catch (error) {
+        console.error(`[TaskStore] 添加任务到队列失败 (taskId: ${taskId}, uid: ${uid}):`, error.message);
+        throw error; // 重新抛出错误，让调用方处理
+      }
     }
 
     if (newTasks.length) {
@@ -321,7 +365,8 @@ class TaskStore {
     // 如果指定了 taskId，需要获取更多任务以便过滤
     const fetchSize = taskId ? batchSize * 3 : batchSize;
     const members = await redis.zrange(queueKey, 0, fetchSize - 1, 'WITHSCORES');
-    if (!members || members.length < 2) return [];
+    console.log("members:",members.length)
+    if (!members || members.length < 1) return [];
 
     const tasks = [];
     const rawTasks = [];
