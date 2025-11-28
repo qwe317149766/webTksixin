@@ -254,10 +254,10 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
           //更改任务队列状态为停止
            await incrementTaskProgress(taskId, 'fail', 1);
            await emitTaskProgress(socketManager, result.uid, taskId);
-           if (typeof statusUpdater === 'function') {
-             await statusUpdater('stopped', '任务已完成');
-           }
-           socketManager.emitToUid(result.uid, 'task:status', { status: 'completed', message: '任务已完成' });
+          //  if (typeof statusUpdater === 'function') {
+          //    await statusUpdater('stopped', '任务已完成');
+          //  }
+          //  socketManager.emitToUid(result.uid, 'task:status', { status: 'completed', message: '任务已完成' });
         }
     });
 
