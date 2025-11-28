@@ -9,9 +9,62 @@ const mysqlPool = require('../config/database');
   // 从 Redis 获取任务信息（如果 batchInfo 中没有完整信息）
 const redis = require('../config/redis');
 const BATCH_SIZE = config.task?.batchSize || 10;
+const TASK_TOTAL_PREFIX = 'task:total';
+const TASK_PROGRESS_PREFIX = 'task:progress';
 
 function createRoomName(uid) {
   return `uid:${uid}`;
+}
+
+function getTaskTotalKey(taskId) {
+  if (!taskId) throw new Error('taskId 不能为空');
+  return `${TASK_TOTAL_PREFIX}:${taskId}`;
+}
+
+function getTaskProgressKey(taskId) {
+  if (!taskId) throw new Error('taskId 不能为空');
+  return `${TASK_PROGRESS_PREFIX}:${taskId}`;
+}
+
+async function getTaskTotals(taskId) {
+  const taskInfoStr = await redis.get(`task:${taskId}`);
+  if (taskInfoStr) {
+    try {
+      taskInfo = JSON.parse(taskInfoStr);
+    } catch (e) {
+      console.warn(`[Task] 解析任务信息失败 (taskId=${taskId}):`, e.message);
+    }
+  }
+  const remainingStr = await redis.get(getTaskTotalKey(taskId));
+  const remaining = Number(remainingStr || 0); 
+  const progress = await redis.hgetall(getTaskProgressKey(taskId));
+  const success = taskInfo.total - remaining;
+  const fail = progress.fail || 0; //目前是0
+  const completed = success + fail;
+  const percent = Math.min(100, Math.round((success / taskInfo.total) * 100));
+  return { total: taskInfo.total, success, fail, completed, remaining, percent };
+}
+
+async function incrementTaskProgress(taskId, field, amount = 1) {
+  if (!taskId || !field) return 0;
+  return redis.hincrby(getTaskProgressKey(taskId), field, amount);
+}
+
+async function emitTaskProgress(socketManager, uid, taskId) {
+  try {
+    const stats = await getTaskTotals(taskId);
+    socketManager.emitToUid(uid, 'task:progress', {
+      taskId,
+      total: stats.total,
+      success: stats.success,
+      fail: stats.fail,
+      completed: stats.completed,
+      remaining: stats.remaining,
+      progress: stats.percent,
+    });
+  } catch (error) {
+    console.error(`[Task] 发送任务进度失败 (taskId=${taskId}):`, error.message);
+  }
 }
 
 class SocketManager {
@@ -125,8 +178,9 @@ function parseCookieString(cookieStr) {
  * @param {Array} tasks
  * @param {string} taskId
  * @param {Function} onNeedMore
+ * @param {Function} statusUpdater
  */
-async function processBatchTasks(socketManager, tasks, taskId, onNeedMore) {
+async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statusUpdater) {
   if (!tasks || tasks.length === 0) return;
 
   const tableName = 'uni_cookies_1'; // 默认表名，可以从配置或任务中获取
@@ -184,29 +238,26 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore) {
         //判断各种状态 执行更新数据库 发送统计数据 扣减余额
         if (result.code === 0) {
           //更新redis中的待私信总数 -1 调用 quotaService 去减去余额
-          await quotaService.decreaseQuota(result.uid, 1);
-          //更新redis中的待私信总数 -1
-          await redis.decr(`task:${taskId}:pending`);
-          //更新数据库中的任务状态
-          //发送统计数据
-          await sendStatisticData(result.uid, taskId, result.cookieId);
-          //发送消息到前端
-        } else if (result.code === 1) {
-          //完成任务则停止队列并发送消息到前端
-          await TaskStore.stopTask(taskId);
+          let pendingResult = await QuotaService.decreaseTaskPendingCount({uid: result.uid, taskId: taskId, amount: 1});
+          if (pendingResult.success) {
+            console.log(`[Task] 用户 ${result.uid} 任务 ${taskId} 待私信总数 -1 成功`);
+          } else {
+            console.error(`[Task] 用户 ${result.uid} 任务 ${taskId} 待私信总数 -1 失败: ${pendingResult.message}`);
+          }
+          await incrementTaskProgress(taskId, 'success', 1);
+          await emitTaskProgress(socketManager, result.uid, taskId);
+          //发送任务统计到前端
           socketManager.emitToUid(result.uid, 'task:status', { status: 'completed', message: '任务已完成' });
-        } else if (result.code === -10002) {
-          //网络错误则重写投递任务
-          batchRequester.retry(result.task);
-        } else if (result.code === -10003) {
-          //CK异常则更新CK状态
-          await dbConnection.execute(
-            `UPDATE ${tableName} SET status = 0 WHERE id = ?`,
-            [result.cookieId]
-          );
         } else {
-          //其他错误则记录日志
-          console.error(`[Task] 未知错误 (ID: ${result.cookieId}):`, result);
+           console.error(`[Task] 用户 ${result.uid} 任务 ${taskId} 发送失败: ${result.message}`);
+           //扣减失败停止任务
+          //更改任务队列状态为停止
+           await incrementTaskProgress(taskId, 'fail', 1);
+           await emitTaskProgress(socketManager, result.uid, taskId);
+           if (typeof statusUpdater === 'function') {
+             await statusUpdater('stopped', '任务已完成');
+           }
+           socketManager.emitToUid(result.uid, 'task:status', { status: 'completed', message: '任务已完成' });
         }
     });
 
@@ -368,7 +419,7 @@ function createTaskProcessor(socketManager, userId, taskId, statusChecker, statu
           // neededLength 表示需要加载的任务数量
           console.log(`[Task] 用户 ${userId} 任务 ${taskId} 需要加载 ${neededLength} 个任务`);
           shouldContinue = true;
-        });
+        }, statusUpdater);
       } else {
         console.log(`[Task] 用户 ${userId} 任务 ${taskId} 队列为空，等待新的触发`);
         const hasPending = await TaskStore.hasPendingTasks(taskId);
@@ -517,6 +568,7 @@ function initSocketServer(httpServer) {
       }
 
       await updateStatus('running', '任务已开始');
+      await emitTaskProgress(socketManager, uid, taskId);
       taskStatus.triggerFn();
       
       const response = { success: true, message: '任务已开始' };
