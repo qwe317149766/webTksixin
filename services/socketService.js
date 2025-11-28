@@ -304,7 +304,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore) {
   }
 }
 
-function createTaskProcessor(socketManager, userId, taskId, statusChecker) {
+function createTaskProcessor(socketManager, userId, taskId, statusChecker, statusUpdater) {
   let isProcessing = false;
   let shouldContinue = false;
 
@@ -343,6 +343,10 @@ function createTaskProcessor(socketManager, userId, taskId, statusChecker) {
         });
       } else {
         console.log(`[Task] 用户 ${userId} 任务 ${taskId} 队列为空，等待新的触发`);
+        const hasPending = await TaskStore.hasPendingTasks(taskId);
+        if (!hasPending && typeof statusUpdater === 'function') {
+          await statusUpdater('idle', '任务队列已处理完成');
+        }
       }
     } catch (error) {
       console.error(`任务轮询失败 (uid=${userId}, taskId=${taskId}):`, error);
@@ -387,7 +391,7 @@ function initSocketServer(httpServer) {
   // 用户任务状态管理：uid -> { isRunning: boolean, triggerFn: function }
   const userTaskStatus = new Map();
 
-  io.on('connection', (socket) => {
+  io.on('connection', async (socket) => {
     const { uid } = socket.data.user;
     const taskId = socket.data.taskId;
     socketManager.bind(uid, socket);
@@ -398,30 +402,70 @@ function initSocketServer(httpServer) {
     // 使用 taskId 作为 key，因为同一个用户可能有多个任务
     const taskKey = `${uid}:${taskId}`;
     
+    const broadcastStatus = (status, message) => {
+      const payload = {
+        isRunning: status === 'running',
+        status,
+        message:
+          message ||
+          (status === 'running'
+            ? '任务处理中'
+            : status === 'stopped'
+              ? '任务已停止'
+              : '任务已完成或待命'),
+        taskId,
+      };
+      socketManager.emitToUid(uid, 'task:status', payload);
+    };
+
+    const existingStatus = await TaskStore.ensureTaskStatus(taskId, uid);
+
     // 初始化任务处理器和状态
     let taskStatus = userTaskStatus.get(taskKey);
     if (!taskStatus) {
-      // 创建状态检查函数
-      const statusChecker = () => {
-        const status = userTaskStatus.get(taskKey);
-        return status ? status.isRunning : false;
-      };
-      
-      const triggerTaskProcessing = createTaskProcessor(socketManager, uid, taskId, statusChecker);
       taskStatus = {
-        isRunning: true, // 默认自动开始
-        triggerFn: triggerTaskProcessing,
+        status: existingStatus.status,
+        isRunning: existingStatus.status === 'running',
+        triggerFn: null,
       };
       userTaskStatus.set(taskKey, taskStatus);
-      userTaskProcessors.set(taskKey, triggerTaskProcessing);
+    } else {
+      taskStatus.status = existingStatus.status;
+      taskStatus.isRunning = existingStatus.status === 'running';
     }
 
+    const statusChecker = () => {
+      const status = userTaskStatus.get(taskKey);
+      return status ? status.status === 'running' : false;
+    };
+
+    const updateStatus = async (newStatus, message, extra = {}) => {
+      await TaskStore.setTaskStatus(taskId, newStatus, { userId: uid, ...extra });
+      const state = userTaskStatus.get(taskKey);
+      if (state) {
+        state.status = newStatus;
+        state.isRunning = newStatus === 'running';
+      } else {
+        userTaskStatus.set(taskKey, {
+          status: newStatus,
+          isRunning: newStatus === 'running',
+        });
+      }
+      broadcastStatus(newStatus, message);
+    };
+
+    const triggerTaskProcessing = createTaskProcessor(
+      socketManager,
+      uid,
+      taskId,
+      statusChecker,
+      updateStatus
+    );
+    taskStatus.triggerFn = triggerTaskProcessing;
+    userTaskProcessors.set(taskKey, triggerTaskProcessing);
+
     // 发送当前任务状态
-    socket.emit('task:status', { 
-      isRunning: taskStatus.isRunning,
-      message: taskStatus.isRunning ? '任务处理中' : '任务已停止',
-      taskId
-    });
+    broadcastStatus(taskStatus.status, null);
 
     // Socket 连接成功并完成鉴权后，如果任务正在运行，立即触发任务处理
     if (taskStatus.isRunning) {
@@ -429,23 +473,22 @@ function initSocketServer(httpServer) {
     }
 
     // 开始任务事件
-    socket.on('task:start', (data, callback) => {
+    socket.on('task:start', async (data, callback) => {
       console.log(`[Socket] 用户 ${uid} 任务 ${taskId} 请求开始任务`);
       
       if (taskStatus.isRunning) {
         const response = { success: false, message: '任务已在运行中' };
-        socket.emit('task:status', { isRunning: true, message: '任务已在运行中', taskId });
+        broadcastStatus('running', '任务已在运行中');
         if (typeof callback === 'function') {
           callback(response);
         }
         return;
       }
 
-      taskStatus.isRunning = true;
+      await updateStatus('running', '任务已开始');
       taskStatus.triggerFn();
       
       const response = { success: true, message: '任务已开始' };
-      socket.emit('task:status', { isRunning: true, message: '任务已开始', taskId });
       console.log(`[Socket] 用户 ${uid} 任务 ${taskId} 已开始`);
       
       if (typeof callback === 'function') {
@@ -454,22 +497,21 @@ function initSocketServer(httpServer) {
     });
 
     // 停止任务事件
-    socket.on('task:stop', (data, callback) => {
+    socket.on('task:stop', async (data, callback) => {
       console.log(`[Socket] 用户 ${uid} 任务 ${taskId} 请求停止任务`);
       
       if (!taskStatus.isRunning) {
         const response = { success: false, message: '任务已停止' };
-        socket.emit('task:status', { isRunning: false, message: '任务已停止', taskId });
+        broadcastStatus(taskStatus.status || 'stopped', '任务已停止');
         if (typeof callback === 'function') {
           callback(response);
         }
         return;
       }
 
-      taskStatus.isRunning = false;
+      await updateStatus('stopped', '任务已停止', { stoppedBy: uid });
       
       const response = { success: true, message: '任务已停止' };
-      socket.emit('task:status', { isRunning: false, message: '任务已停止', taskId });
       console.log(`[Socket] 用户 ${uid} 任务 ${taskId} 已停止`);
       
       if (typeof callback === 'function') {
@@ -478,18 +520,24 @@ function initSocketServer(httpServer) {
     });
 
     // 获取任务状态事件
-    socket.on('task:getStatus', (data, callback) => {
+    socket.on('task:getStatus', async (data, callback) => {
+      const latestStatus = await TaskStore.getTaskStatus(taskId);
+      const statusValue = latestStatus?.status || taskStatus.status || 'idle';
+      const isRunning = statusValue === 'running';
       const response = {
         success: true,
-        isRunning: taskStatus.isRunning,
+        isRunning,
         taskId,
-        message: taskStatus.isRunning ? '任务处理中' : '任务已停止'
+        status: statusValue,
+        message:
+          latestStatus?.message ||
+          (statusValue === 'running'
+            ? '任务处理中'
+            : statusValue === 'stopped'
+              ? '任务已停止'
+              : '任务已完成或待命'),
       };
-      socket.emit('task:status', { 
-        isRunning: taskStatus.isRunning, 
-        message: response.message,
-        taskId
-      });
+      broadcastStatus(statusValue, response.message);
       if (typeof callback === 'function') {
         callback(response);
       }
@@ -499,8 +547,8 @@ function initSocketServer(httpServer) {
       socketManager.unbind(uid, socket.id);
       console.log(`[Socket] 用户 ${uid} 已断开，socketId=${socket.id}`);
       if (!socketManager.hasConnections(uid)) {
-        userTaskProcessors.delete(uid);
-        userTaskStatus.delete(uid);
+        userTaskProcessors.delete(taskKey);
+        userTaskStatus.delete(taskKey);
       }
     });
   });

@@ -6,6 +6,8 @@ const redis = require('../config/redis');
 class TaskStore {
   constructor() {
     this.queueKeyPrefix = 'tasks:zqueue';
+    this.taskStatusPrefix = 'tasks:status';
+    this.taskCountPrefix = 'tasks:count';
   }
 
   getQueueKey(userId) {
@@ -25,6 +27,85 @@ class TaskStore {
 
   getBatchInfoKey(batchNo) {
     return `tasks:batch:${batchNo}:info`;
+  }
+
+  getTaskStatusKey(taskId) {
+    if (!taskId) {
+      throw new Error('taskId 不能为空');
+    }
+    return `${this.taskStatusPrefix}:${taskId}`;
+  }
+
+  getTaskCountKey(taskId) {
+    if (!taskId) {
+      throw new Error('taskId 不能为空');
+    }
+    return `${this.taskCountPrefix}:${taskId}`;
+  }
+
+  async getTaskStatus(taskId) {
+    if (!taskId) return null;
+    const key = this.getTaskStatusKey(taskId);
+    const data = await redis.hgetall(key);
+    if (!data || Object.keys(data).length === 0) {
+      return null;
+    }
+    return {
+      status: data.status || 'idle',
+      userId: data.userId || null,
+      updatedAt: Number(data.updatedAt || 0),
+      stoppedBy: data.stoppedBy || null,
+      reason: data.reason || '',
+    };
+  }
+
+  async setTaskStatus(taskId, status, extra = {}) {
+    if (!taskId) return null;
+    const key = this.getTaskStatusKey(taskId);
+    const payload = {
+      status,
+      updatedAt: Date.now(),
+      ...extra,
+    };
+    const flat = [];
+    Object.entries(payload).forEach(([k, v]) => {
+      flat.push(k, v === undefined || v === null ? '' : String(v));
+    });
+    await redis.hmset(key, ...flat);
+    return this.getTaskStatus(taskId);
+  }
+
+  async ensureTaskStatus(taskId, userId) {
+    const existing = await this.getTaskStatus(taskId);
+    if (existing) {
+      return existing;
+    }
+    return this.setTaskStatus(taskId, 'idle', { userId: userId || '' });
+  }
+
+  async incrementTaskCount(taskId, delta) {
+    if (!taskId || !delta) {
+      return null;
+    }
+    const key = this.getTaskCountKey(taskId);
+    const value = await redis.incrby(key, delta);
+    if (value < 0) {
+      await redis.set(key, 0);
+      return 0;
+    }
+    return value;
+  }
+
+  async getTaskCount(taskId) {
+    if (!taskId) return 0;
+    const key = this.getTaskCountKey(taskId);
+    const val = await redis.get(key);
+    return Number(val || 0);
+  }
+
+  async hasPendingTasks(taskId) {
+    const count = await this.getTaskCount(taskId);
+    return count > 0;
   }
 
   async getBatchInfo(batchNo) {
@@ -161,6 +242,10 @@ class TaskStore {
       newTasks.push({ batchNo, uid, taskId, userId });
     }
 
+    if (newTasks.length) {
+      await this.incrementTaskCount(taskId, newTasks.length);
+    }
+
     return {
       isNewBatch: existingSet.size === 0,
       newUids: newTasks.map(task => task.uid),
@@ -240,6 +325,7 @@ class TaskStore {
 
     const tasks = [];
     const rawTasks = [];
+    const taskCountMap = new Map();
     
     // 解析任务，如果指定了 taskId，只保留匹配的任务
     for (let i = 0; i < members.length; i += 2) {
@@ -255,6 +341,10 @@ class TaskStore {
           ...task,
           createdAt: Number(members[i + 1]),
         });
+        const key = task.taskId;
+        if (key) {
+          taskCountMap.set(key, (taskCountMap.get(key) || 0) + 1);
+        }
         // 如果已经获取到足够的任务，停止
         if (tasks.length >= batchSize) {
           break;
@@ -284,6 +374,14 @@ class TaskStore {
     }
     if (batchUidRemovals.length > 0) {
       await Promise.all(batchUidRemovals);
+    }
+
+    // 更新 taskId 对应的任务计数
+    const countUpdates = Array.from(taskCountMap.entries()).map(([tId, count]) =>
+      this.incrementTaskCount(tId, -count)
+    );
+    if (countUpdates.length > 0) {
+      await Promise.all(countUpdates);
     }
 
     // 获取批次信息（按批次号去重）
