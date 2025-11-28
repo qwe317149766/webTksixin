@@ -22,14 +22,46 @@ const PORT = config.server.port;
 
 // ==================== 中间件配置 ====================
 
-// 安全头
-app.use(helmet());
+// 安全头配置（允许 Socket.IO CDN 和内联脚本）
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: [
+        "'self'",
+        "'unsafe-inline'", // 允许内联脚本（用于 demo）
+        "https://cdn.socket.io" // 允许从 Socket.IO CDN 加载脚本
+      ],
+      scriptSrcAttr: [
+        "'unsafe-inline'", // 允许内联事件处理器（如 onclick）
+        "'unsafe-hashes'" // 允许使用 hash 的内联事件处理器
+      ],
+      styleSrc: [
+        "'self'",
+        "'unsafe-inline'" // 允许内联样式
+      ],
+      connectSrc: [
+        "'self'",
+        "ws:", // WebSocket 连接
+        "wss:", // 安全 WebSocket 连接
+        "http://localhost:*", // 本地开发
+        "http://127.0.0.1:*", // 本地开发
+        "https://*" // 允许 HTTPS 连接（生产环境）
+      ],
+      imgSrc: ["'self'", "data:", "https:"],
+      fontSrc: ["'self'", "https:", "data:"],
+    },
+  },
+}));
 
 // CORS 配置
 app.use(cors(config.cors));
 
 // Gzip 压缩
 app.use(compression());
+
+// 静态文件服务（用于提供 HTML demo 等）
+app.use(express.static('public'));
 
 // 解析 JSON 和 URL 编码
 app.use(express.json({ limit: '10mb' }));
