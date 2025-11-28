@@ -36,7 +36,13 @@ class BatchRequester extends EventEmitter {
 
         // 队列不足时提醒补充新任务
         if (this.queue.length < this.lowThreshold) {
-            this.emit("needMore", this.queue.length);
+            // 计算需要加载的长度：至少需要达到 lowThreshold，理想情况下应该达到 concurrency
+            const currentLength = this.queue.length;
+            const neededLength = Math.max(
+                this.lowThreshold - currentLength,  // 至少达到阈值
+                this.concurrency - currentLength     // 理想情况下达到并发数
+            );
+            this.emit("needMore", currentLength, neededLength);
         }
 
         this._runNext();

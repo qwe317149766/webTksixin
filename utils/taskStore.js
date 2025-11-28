@@ -225,7 +225,7 @@ class TaskStore {
    * @param {number} batchSize - 批量大小，默认10
    * @returns {Array}
    */
-  async dequeueTask(userId, batchSize = 10) {
+  async dequeueTask(userId, taskId = null, batchSize = 10) {
     if (userId === undefined || userId === null) {
       return [];
     }
@@ -233,22 +233,32 @@ class TaskStore {
     const queueKey = this.getQueueKey(userId);
     if (batchSize <= 0) batchSize = 10;
     
-    const members = await redis.zrange(queueKey, 0, batchSize - 1, 'WITHSCORES');
+    // 如果指定了 taskId，需要获取更多任务以便过滤
+    const fetchSize = taskId ? batchSize * 3 : batchSize;
+    const members = await redis.zrange(queueKey, 0, fetchSize - 1, 'WITHSCORES');
     if (!members || members.length < 2) return [];
 
     const tasks = [];
     const rawTasks = [];
     
-    // 解析任务
+    // 解析任务，如果指定了 taskId，只保留匹配的任务
     for (let i = 0; i < members.length; i += 2) {
       const rawTask = members[i];
       try {
         const task = JSON.parse(rawTask);
+        // 如果指定了 taskId，只处理匹配的任务
+        if (taskId && task.taskId !== taskId) {
+          continue;
+        }
         rawTasks.push(rawTask);
         tasks.push({
           ...task,
           createdAt: Number(members[i + 1]),
         });
+        // 如果已经获取到足够的任务，停止
+        if (tasks.length >= batchSize) {
+          break;
+        }
       } catch (error) {
         // 忽略格式错误的任务
       }

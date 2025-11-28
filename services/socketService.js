@@ -6,7 +6,8 @@ const QuotaService = require('./quotaService');
 const BatchRequester = require('../utils/BatchRequester');
 const { sendText } = require('../tiktokWeb/TiktokApi');
 const mysqlPool = require('../config/database');
-
+  // 从 Redis 获取任务信息（如果 batchInfo 中没有完整信息）
+const redis = require('../config/redis');
 const BATCH_SIZE = config.task?.batchSize || 10;
 
 function createRoomName(uid) {
@@ -122,14 +123,27 @@ function parseCookieString(cookieStr) {
  * 批量处理任务，使用 BatchRequester 执行 sendText
  * @param {SocketManager} socketManager
  * @param {Array} tasks
+ * @param {string} taskId
+ * @param {Function} onNeedMore
  */
-async function processBatchTasks(socketManager, tasks, onNeedMore) {
+async function processBatchTasks(socketManager, tasks, taskId, onNeedMore) {
   if (!tasks || tasks.length === 0) return;
 
   const tableName = 'uni_cookies_1'; // 默认表名，可以从配置或任务中获取
   let dbConnection = null;
+  let taskInfo = null;
 
   try {
+  
+    const taskInfoStr = await redis.get(`task:${taskId}`);
+    if (taskInfoStr) {
+      try {
+        taskInfo = JSON.parse(taskInfoStr);
+      } catch (e) {
+        console.warn(`[Task] 解析任务信息失败 (taskId=${taskId}):`, e.message);
+      }
+    }
+
     // 获取数据库连接
     dbConnection = await mysqlPool.getConnection();
 
@@ -174,10 +188,10 @@ async function processBatchTasks(socketManager, tasks, onNeedMore) {
       
     });
 
-    batchRequester.on('needMore', (length) => {
-      console.log(`[BatchRequester] 需要加载更多任务，当前队列长度: ${length}`);
+    batchRequester.on('needMore', (currentLength, neededLength) => {
+      console.log(`[BatchRequester] 需要加载更多任务，当前队列长度: ${currentLength}，需要加载: ${neededLength}`);
       if (typeof onNeedMore === 'function') {
-        onNeedMore();
+        onNeedMore(neededLength);
       }
     });
 
@@ -188,7 +202,15 @@ async function processBatchTasks(socketManager, tasks, onNeedMore) {
     // 为每个任务分配一个 Cookie 并添加任务
     for (let i = 0; i < tasks.length; i++) {
       const task = tasks[i];
+      // 优先使用 batchInfo，如果没有则使用 taskInfo
       const batchInfo = task.batchInfo || {};
+      const finalTaskInfo = taskInfo || {};
+      
+      // 合并任务信息：batchInfo 优先，taskInfo 作为补充
+      const content = batchInfo.content || finalTaskInfo.content || [];
+      const msgType = batchInfo.msgType ?? finalTaskInfo.msgType ?? 0;
+      const proxy = batchInfo.proxy || finalTaskInfo.proxy || '';
+      const sendType = batchInfo.sendType ?? finalTaskInfo.sendType ?? 0;
       
       // 从已获取的 cookies 中分配（循环使用）
       const cookieIndex = i % allCookies.length;
@@ -213,21 +235,21 @@ async function processBatchTasks(socketManager, tasks, onNeedMore) {
 
       // 从 content 数组中随机选择消息内容
       let textMsg = '';
-      if (Array.isArray(batchInfo.content) && batchInfo.content.length > 0) {
+      if (Array.isArray(content) && content.length > 0) {
         // 如果是数组，随机选择一个
-        const randomIndex = Math.floor(Math.random() * batchInfo.content.length);
-        textMsg = batchInfo.content[randomIndex] || '';
-      } else if (typeof batchInfo.content === 'string') {
+        const randomIndex = Math.floor(Math.random() * content.length);
+        textMsg = content[randomIndex] || '';
+      } else if (typeof content === 'string') {
         // 如果是字符串，直接使用
-        textMsg = batchInfo.content;
+        textMsg = content;
       }
 
-      // 构建 sendText 参数
+      // 构建 sendText 参数 
       const requestData = {
         toUid: task.uid,
         textMsg: textMsg,
         cookieParams: cookiesText,
-        proxy: batchInfo.proxy || null,
+        proxy: proxy || null,
         user_agent: userAgent,
         device_id: deviceId,
         createSequenceId,
@@ -281,7 +303,7 @@ async function processBatchTasks(socketManager, tasks, onNeedMore) {
   }
 }
 
-function createTaskProcessor(socketManager, userId, statusChecker) {
+function createTaskProcessor(socketManager, userId, taskId, statusChecker) {
   let isProcessing = false;
   let shouldContinue = false;
 
@@ -292,7 +314,7 @@ function createTaskProcessor(socketManager, userId, statusChecker) {
 
     // 检查任务状态，如果已停止则不继续处理
     if (statusChecker && !statusChecker()) {
-      console.log(`[Task] 用户 ${userId} 任务已停止，不再处理`);
+      console.log(`[Task] 用户 ${userId} 任务 ${taskId} 已停止，不再处理`);
       return;
     }
 
@@ -305,21 +327,24 @@ function createTaskProcessor(socketManager, userId, statusChecker) {
     shouldContinue = false;
 
     try {
-      const tasks = await TaskStore.dequeueTask(userId, BATCH_SIZE);
+      // 根据 taskId 过滤任务
+      const tasks = await TaskStore.dequeueTask(userId, taskId, BATCH_SIZE);
       if (tasks && tasks.length > 0) {
-        await processBatchTasks(socketManager, tasks, () => {
+        await processBatchTasks(socketManager, tasks, taskId, (neededLength) => {
           // 再次检查状态，如果已停止则不继续
           if (statusChecker && !statusChecker()) {
-            console.log(`[Task] 用户 ${userId} 任务已停止，停止后续处理`);
+            console.log(`[Task] 用户 ${userId} 任务 ${taskId} 已停止，停止后续处理`);
             return;
           }
+          // neededLength 表示需要加载的任务数量
+          console.log(`[Task] 用户 ${userId} 任务 ${taskId} 需要加载 ${neededLength} 个任务`);
           shouldContinue = true;
         });
       } else {
-        console.log(`[Task] 用户 ${userId} 队列为空，等待新的触发`);
+        console.log(`[Task] 用户 ${userId} 任务 ${taskId} 队列为空，等待新的触发`);
       }
     } catch (error) {
-      console.error(`任务轮询失败 (uid=${userId}):`, error);
+      console.error(`任务轮询失败 (uid=${userId}, taskId=${taskId}):`, error);
     } finally {
       isProcessing = false;
       if (shouldContinue && (!statusChecker || statusChecker())) {
@@ -340,11 +365,16 @@ function initSocketServer(httpServer) {
   io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+      const taskId = socket.handshake.auth?.taskId || socket.handshake.query?.taskId;
       const user = await verifyToken(token);
       if (!user || !user.uid) {
         return next(new Error('AUTH_FAILED'));
       }
+      if (!taskId) {
+        return next(new Error('TASKID_REQUIRED'));
+      }
       socket.data.user = user;
+      socket.data.taskId = taskId;
       return next();
     } catch (error) {
       return next(error);
@@ -358,33 +388,38 @@ function initSocketServer(httpServer) {
 
   io.on('connection', (socket) => {
     const { uid } = socket.data.user;
+    const taskId = socket.data.taskId;
     socketManager.bind(uid, socket);
-    console.log(`[Socket] 用户 ${uid} 已连接，socketId=${socket.id}`);
+    console.log(`[Socket] 用户 ${uid} 已连接，taskId=${taskId}，socketId=${socket.id}`);
 
-    socket.emit('connected', { uid });
+    socket.emit('connected', { uid, taskId });
 
+    // 使用 taskId 作为 key，因为同一个用户可能有多个任务
+    const taskKey = `${uid}:${taskId}`;
+    
     // 初始化任务处理器和状态
-    let taskStatus = userTaskStatus.get(uid);
+    let taskStatus = userTaskStatus.get(taskKey);
     if (!taskStatus) {
       // 创建状态检查函数
       const statusChecker = () => {
-        const status = userTaskStatus.get(uid);
+        const status = userTaskStatus.get(taskKey);
         return status ? status.isRunning : false;
       };
       
-      const triggerTaskProcessing = createTaskProcessor(socketManager, uid, statusChecker);
+      const triggerTaskProcessing = createTaskProcessor(socketManager, uid, taskId, statusChecker);
       taskStatus = {
         isRunning: true, // 默认自动开始
         triggerFn: triggerTaskProcessing,
       };
-      userTaskStatus.set(uid, taskStatus);
-      userTaskProcessors.set(uid, triggerTaskProcessing);
+      userTaskStatus.set(taskKey, taskStatus);
+      userTaskProcessors.set(taskKey, triggerTaskProcessing);
     }
 
     // 发送当前任务状态
     socket.emit('task:status', { 
       isRunning: taskStatus.isRunning,
-      message: taskStatus.isRunning ? '任务处理中' : '任务已停止'
+      message: taskStatus.isRunning ? '任务处理中' : '任务已停止',
+      taskId
     });
 
     // Socket 连接成功并完成鉴权后，如果任务正在运行，立即触发任务处理
@@ -394,11 +429,11 @@ function initSocketServer(httpServer) {
 
     // 开始任务事件
     socket.on('task:start', (data, callback) => {
-      console.log(`[Socket] 用户 ${uid} 请求开始任务`);
+      console.log(`[Socket] 用户 ${uid} 任务 ${taskId} 请求开始任务`);
       
       if (taskStatus.isRunning) {
         const response = { success: false, message: '任务已在运行中' };
-        socket.emit('task:status', { isRunning: true, message: '任务已在运行中' });
+        socket.emit('task:status', { isRunning: true, message: '任务已在运行中', taskId });
         if (typeof callback === 'function') {
           callback(response);
         }
@@ -409,8 +444,8 @@ function initSocketServer(httpServer) {
       taskStatus.triggerFn();
       
       const response = { success: true, message: '任务已开始' };
-      socket.emit('task:status', { isRunning: true, message: '任务已开始' });
-      console.log(`[Socket] 用户 ${uid} 任务已开始`);
+      socket.emit('task:status', { isRunning: true, message: '任务已开始', taskId });
+      console.log(`[Socket] 用户 ${uid} 任务 ${taskId} 已开始`);
       
       if (typeof callback === 'function') {
         callback(response);
@@ -419,11 +454,11 @@ function initSocketServer(httpServer) {
 
     // 停止任务事件
     socket.on('task:stop', (data, callback) => {
-      console.log(`[Socket] 用户 ${uid} 请求停止任务`);
+      console.log(`[Socket] 用户 ${uid} 任务 ${taskId} 请求停止任务`);
       
       if (!taskStatus.isRunning) {
         const response = { success: false, message: '任务已停止' };
-        socket.emit('task:status', { isRunning: false, message: '任务已停止' });
+        socket.emit('task:status', { isRunning: false, message: '任务已停止', taskId });
         if (typeof callback === 'function') {
           callback(response);
         }
@@ -433,8 +468,8 @@ function initSocketServer(httpServer) {
       taskStatus.isRunning = false;
       
       const response = { success: true, message: '任务已停止' };
-      socket.emit('task:status', { isRunning: false, message: '任务已停止' });
-      console.log(`[Socket] 用户 ${uid} 任务已停止`);
+      socket.emit('task:status', { isRunning: false, message: '任务已停止', taskId });
+      console.log(`[Socket] 用户 ${uid} 任务 ${taskId} 已停止`);
       
       if (typeof callback === 'function') {
         callback(response);
@@ -446,11 +481,13 @@ function initSocketServer(httpServer) {
       const response = {
         success: true,
         isRunning: taskStatus.isRunning,
+        taskId,
         message: taskStatus.isRunning ? '任务处理中' : '任务已停止'
       };
       socket.emit('task:status', { 
         isRunning: taskStatus.isRunning, 
-        message: response.message 
+        message: response.message,
+        taskId
       });
       if (typeof callback === 'function') {
         callback(response);
