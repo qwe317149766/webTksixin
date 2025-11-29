@@ -113,11 +113,40 @@ function getTaskRequesterKey(userId, taskId) {
   return `${userId}:${taskId}`;
 }
 
-function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMore, statusUpdater) {
+async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMore, statusUpdater) {
   const key = getTaskRequesterKey(userId, taskId);
   let batchRequester = taskRequesters.get(key);
+  
+  // 检查任务状态
+  const taskStatus = await TaskStore.getTaskStatus(taskId);
+  const currentStatus = taskStatus?.status || 'idle';
+  
   if (batchRequester) {
+    // BatchRequester 已存在，检查状态是否需要重新启动或停止
+    if (currentStatus === 'idle' && batchRequester.running) {
+      // 任务状态为 idle，但 BatchRequester 正在运行，需要停止
+      console.log(`[BatchRequester] 任务 ${taskId} 状态为 idle，停止 BatchRequester`);
+      batchRequester.stop();
+    } else if (currentStatus === 'stopped' && batchRequester.running) {
+      // 任务状态为 stopped，但 BatchRequester 正在运行，需要停止
+      console.log(`[BatchRequester] 任务 ${taskId} 状态为 stopped，停止 BatchRequester`);
+      batchRequester.stop();
+    } else if (currentStatus === 'stopped' && !batchRequester.running) {
+      // 任务状态为 stopped，但 BatchRequester 已停止，需要重新启动任务
+      console.log(`[BatchRequester] 任务 ${taskId} 状态为 stopped，重新启动 BatchRequester`);
+      batchRequester.start();
+    } else if (currentStatus === 'running' && !batchRequester.running) {
+      // 任务状态为 running，但 BatchRequester 已停止，需要重新启动
+      console.log(`[BatchRequester] 任务 ${taskId} 状态为 running，重新启动 BatchRequester`);
+      batchRequester.start();
+    }
     return batchRequester;
+  }
+
+  // 如果 BatchRequester 不存在，但任务状态为 idle，不应该创建新的
+  if (currentStatus === 'idle') {
+    console.log(`[BatchRequester] 任务 ${taskId} 状态为 idle，不创建新的 BatchRequester`);
+    return null;
   }
 
   batchRequester = new BatchRequester({
@@ -142,7 +171,16 @@ function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMore, st
           taskId: taskIdFromResult,
           amount: 1,
         });
-        console.log('taskIdFromResult:',taskIdFromResult)
+        console.log('执行扣减!')
+        console.log('taskIdFromResult:',pendingResult)
+        //如果条数扣减失败直接停止队列任务，发送到前端 任务已完成,停止队列任务
+        if (!pendingResult.success) {
+          console.log('任务已完成')
+          batchRequester.stop();
+          //更新队列的运行状态
+          await statusUpdater('idle', '任务队列已处理完成');
+          return;
+        }
         console.log(
           `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 待私信总数 -1 成功`
         );
@@ -167,7 +205,7 @@ function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMore, st
         console.log('cookieId:',cookieId,data.code)
         // 不同错误码更新 Cookie 状态
         let needRetry = false;
-
+        let tongJs = true
         if (data.code === -10000) {
           console.log(
             `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 维护社区: ${JSON.stringify(
@@ -218,7 +256,7 @@ function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMore, st
               data.data
             )}`
           );
-          // TODO: 将任务重新投递到队列
+          tongJs = false
           needRetry = true;
         } else {
           console.error(
@@ -234,8 +272,10 @@ function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMore, st
           const retryResult = await redis.zadd(queueKey, Date.now(), JSON.stringify(task));
           console.log("retryResult:",retryResult)
         }
-        await incrementTaskProgress(task.taskId, 'fail', 1);
-        await emitTaskProgress(socketManager, task.userId, taskIdFromResult);
+        if (tongJs) {
+          await incrementTaskProgress(task.taskId, 'fail', 1);
+          await emitTaskProgress(socketManager, task.userId, taskIdFromResult);
+        }
       }
     } catch (err) {
       console.error('[BatchRequester] 结果处理失败:', err);
@@ -391,7 +431,31 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
     const allCookies = await getAlivableCookies(dbConnection, tableName, tasks.length);
 
     if (allCookies.length === 0) {
-      console.warn(`[Task] 未找到可用 Cookie，跳过本次批量处理`);
+      console.warn(`[Task] 未找到可用 Cookie，休息10秒后重新处理`);
+      
+      // 等待10秒
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      
+      // 将任务重新放回队列
+      const userId = tasks[0]?.userId;
+      if (userId) {
+        const queueKey = TaskStore.getQueueKey(userId);
+        for (const task of tasks) {
+          const entry = JSON.stringify({
+            batchNo: task.batchNo,
+            taskId: task.taskId,
+            uid: task.uid,
+            userId: task.userId
+          });
+          await redis.zadd(queueKey, Date.now(), entry);
+        }
+        console.log(`[Task] 已将 ${tasks.length} 个任务重新放回队列，等待重新处理`);
+        
+        // 触发 onNeedMore 回调，让上层重新获取任务
+        if (typeof onNeedMore === 'function') {
+          onNeedMore(tasks.length);
+        }
+      }
       return;
     }
 
@@ -399,13 +463,19 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
 
     // 为当前用户 + 任务获取（或创建）单例 BatchRequester
     const userId = tasks[0]?.userId;
-    const batchRequester = getOrCreateBatchRequester(
+    const batchRequester = await getOrCreateBatchRequester(
       socketManager,
       userId,
       taskId,
       onNeedMore,
       statusUpdater
     );
+
+    // 如果 BatchRequester 为 null（状态为 idle），跳过本次批量处理
+    if (!batchRequester) {
+      console.log(`[Task] 任务 ${taskId} 状态为 idle，跳过批量处理`);
+      return;
+    }
 
     // 为每个任务分配一个 Cookie 并添加任务
     for (let i = 0; i < tasks.length; i++) {
