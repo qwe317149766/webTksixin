@@ -84,7 +84,6 @@ class CurlHttpSdk extends EventEmitter {
 						headers[name.toLowerCase()] = value;
 					}
 				}
-				console.log("[headers]:",headers)
                 callback.resolve({
                     ok: responseCode >= 200 && responseCode < 300,
                     status: responseCode,

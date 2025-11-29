@@ -506,7 +506,6 @@ class HttpClient {
 				referer: 'https://www.tiktok.com/',
 				'referrer-policy': 'strict-origin-when-cross-origin',
 			}
-			Log.info('headersheadersheaders:', queryParams, headers)
 			// 发送 GET 请求
 			const response = await curlSdk.get(url, headers)
 
@@ -651,7 +650,6 @@ class HttpClient {
 				...tiketHeader
 				
 			}
-			Log.info('headersheadersheaders:', headers)
 
 			// 在发送 POST 请求前，先调用 begin_user_registration 接口
 			// // 获取更新后的 cookies（包含响应头 Set-Cookie 中的新 cookies）
@@ -683,13 +681,8 @@ class HttpClient {
 
 			// 使用CurlHttpSdk发送请求
 			const response = await curlSdk.post(url, body, headers,cookies['sessionid'])
-			console.log('response.headers:',response)
 			// 处理 Cookie 更新
 			if (onCookieUpdate && response.headers['set-cookie']) {
-				Log.info(
-					'response.headersresponse.headersresponse.headers:',
-					response.headers['set-cookie']
-				)
 				const newCookies = this.parseSetCookie(response.headers['set-cookie'])
 				onCookieUpdate(newCookies)
 			}
@@ -886,7 +879,6 @@ class TiktokSdk {
 				device_platform: 'web_pc',
 				msToken: requestContext.cookies.msToken,
 			})
-			Log.info('queryParamsqueryParamsqueryParams:', queryParams)
 			// 发送请求
 			const responseData = await this.httpClient.post(
 				'/v1/message/send',

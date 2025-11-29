@@ -8,7 +8,7 @@ const QUOTA_KEY = 'user:score';
 const QUOTA_CONFIG_KEY = 'pay:config';
 const QUOTA_TABLE = 'uni_system_admin'; // 用户表名，可根据实际情况修改
 const QUOTA_COLUMN = 'score_num'; // 余额字段名，可根据实际情况修改
-const TASK_PENDING_PREFIX = 'task:total:';
+const TASK_PENDING_PREFIX = 'task:total';
 function getTaskPendingKey(taskId) {
   if (!taskId) {
     throw new Error('taskId 不能为空');
@@ -115,8 +115,8 @@ async function getPayConfigFromDB(uid) {
         return acc;
       }, {});
       proxy_price = Number(systemConfig.proxy_price) || 100     //消耗100积分 
-      unit_proxy = Number(systemConfig.unit_proxy) || 10000   //每一万代理
-      unit_sixin = Number(systemConfig.unit_sixin) || 1       //每条私信
+      unit_proxy = Number(systemConfig.unit_proxy) || 10000     //每一万代理
+      unit_sixin = Number(systemConfig.unit_sixin) || 1         //每条私信
       sixin_price = Number(systemConfig.sixin_price) || 1    //等于积分
       unit_score = Number(systemConfig.unit_score) || 1      //每积分
       score_price = Number(systemConfig.score_price) || 0.03 //等于3分钱

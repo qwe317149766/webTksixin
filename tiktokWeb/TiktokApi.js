@@ -1,6 +1,19 @@
 const { TiktokSdk } = require('./TiktokSdk')
 //导入buildHeadersByLang
 const { buildHeadersByLang } = require('./util/helper')
+
+// 按账户 uid 复用 TiktokSdk 单例，避免重复初始化
+const sdkInstances = new Map() // key: uid(字符串) 或 'default'
+
+function getSdkInstance(uid) {
+	const key = uid ? String(uid) : 'default'
+	if (sdkInstances.has(key)) {
+		return sdkInstances.get(key)
+	}
+	const sdk = new TiktokSdk()
+	sdkInstances.set(key, sdk)
+	return sdk
+}
 function generateWindowsChromeUA() {
 	const major = 130 + Math.floor(Math.random() * 11) // Chrome 版本 120~130
 	const build = `${major}.0.${Math.floor(Math.random() * 5000)}.${Math.floor(Math.random() * 200)}`
@@ -107,7 +120,7 @@ async function sendText(requestData) {
 	delete requestCookies['User-Agent']
 	delete requestCookies['user-agent']
 
-	const sdk = new TiktokSdk()
+	const sdk = getSdkInstance(uid)
 	//先获取tzname
 	let {'store-country-code': storeCountryCode} = cookie
 	Log.info("storeCountryCode:",storeCountryCode)
@@ -219,7 +232,7 @@ async function sendText(requestData) {
 				data: result,
 			}
 		}
-		if (status_code == 7201) {
+		if (status_code == 7201 || status_code == 7289 || status_code == 7290) {
 			return {
 				code: 10004,
 				msg: '发送端限制私信',

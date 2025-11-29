@@ -106,6 +106,178 @@ class SocketManager {
   }
 }
 
+// 针对用户 + 任务的 BatchRequester 单例
+const taskRequesters = new Map(); // key: `${userId}:${taskId}` -> BatchRequester
+
+function getTaskRequesterKey(userId, taskId) {
+  return `${userId}:${taskId}`;
+}
+
+function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMore, statusUpdater) {
+  const key = getTaskRequesterKey(userId, taskId);
+  let batchRequester = taskRequesters.get(key);
+  if (batchRequester) {
+    return batchRequester;
+  }
+
+  batchRequester = new BatchRequester({
+    sdk: null, // 函数模式下不需要 SDK
+    concurrency: config.task?.concurrency || 10,
+    lowThreshold: config.task?.lowThreshold || 50,
+  });
+
+  // 统一结果处理：更新配额、进度、Cookie 状态等
+  batchRequester.on('result', async (result) => {
+    const tableName = 'uni_cookies_1';
+    let dbConnection = null;
+    let {task} = result.data;
+    const taskIdFromResult = task.taskId;
+    console.log('taskIdFromResult:',taskIdFromResult)
+    try {
+      dbConnection = await mysqlPool.getConnection();
+      if (result.code === 0) {
+        // 成功：待私信总数 -1，更新使用次数，进度 +1
+        let pendingResult = await QuotaService.decreaseTaskPendingCount({
+          uid: result.uid,
+          taskId: taskIdFromResult,
+          amount: 1,
+        });
+        console.log('taskIdFromResult:',taskIdFromResult)
+        console.log(
+          `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 待私信总数 -1 成功`
+        );
+        try {
+          await dbConnection.execute(
+            `UPDATE ${tableName} SET used_count = used_count + 1, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
+            [result.cookieId]
+          );
+        } catch (updateError) {
+          console.error(
+            `[Task] 更新 Cookie 使用次数失败 (ID: ${result.cookieId}):`,
+            updateError.message
+          );
+        }
+
+        await incrementTaskProgress(taskIdFromResult, 'success', 1);
+        await emitTaskProgress(socketManager, result.uid, taskIdFromResult);
+      } else {
+        const data = result.data || {};
+        const taskIdFromResult = task.taskId;
+        const cookieId = data.cookieId || result.cookieId;
+        console.log('cookieId:',cookieId,data.code)
+        // 不同错误码更新 Cookie 状态
+        let needRetry = false;
+
+        if (data.code === -10000) {
+          console.log(
+            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 维护社区: ${JSON.stringify(
+              data.data
+            )}`
+          );
+          await dbConnection.execute(
+            `UPDATE ${tableName} SET status = 5 WHERE id = ?`,
+            [cookieId]
+          );
+
+        } else if (data.code === -1) {
+          console.log(
+            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 退出状态: ${JSON.stringify(
+              data.data
+            )}`
+          );
+          await dbConnection.execute(
+            `UPDATE ${tableName} SET status = 3 WHERE id = ?`,
+            [cookieId]
+          );
+          needRetry = true;
+        } else if (data.code === -10004) {
+          console.log(
+            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 发送端被限制: ${JSON.stringify(
+              data.data
+            )}`
+          );
+          await dbConnection.execute(
+            `UPDATE ${tableName} SET status = 2 WHERE id = ?`,
+            [cookieId]
+          );
+          needRetry = true;
+        } else if (data.code === 10002) {
+          console.log(
+            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 发送太快: ${JSON.stringify(
+              data.data
+            )}`
+          );
+          await dbConnection.execute(
+            `UPDATE ${tableName} SET status = 6 WHERE id = ?`,
+            [cookieId]
+          );
+          needRetry = true;
+        } else if (data.code === -10002) {
+          console.log(
+            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 网络异常: ${JSON.stringify(
+              data.data
+            )}`
+          );
+          // TODO: 将任务重新投递到队列
+          needRetry = true;
+        } else {
+          console.error(
+            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 发送失败: ${JSON.stringify(
+              data.data
+            )}`
+          );
+          needRetry = true;
+        }
+        if (needRetry) {
+          console.log('重新添加队列',typeof task)
+          const queueKey = TaskStore.getQueueKey(task.userId)
+          const retryResult = await redis.zadd(queueKey, Date.now(), JSON.stringify(task));
+          console.log("retryResult:",retryResult)
+        }
+        await incrementTaskProgress(task.taskId, 'fail', 1);
+        await emitTaskProgress(socketManager, task.userId, taskIdFromResult);
+      }
+    } catch (err) {
+      console.error('[BatchRequester] 结果处理失败:', err);
+    } finally {
+      if (dbConnection) {
+        dbConnection.release();
+      }
+    }
+  });
+
+  batchRequester.on('needMore', (currentLength, neededLength) => {
+    console.log(
+      `[BatchRequester] 需要加载更多任务，当前队列长度: ${currentLength}，需要加载: ${neededLength}`
+    );
+    if (typeof onNeedMore === 'function') {
+      onNeedMore(neededLength);
+    }
+  });
+
+  batchRequester.on('done', async () => {
+    console.log('[BatchRequester] 所有任务完成');
+    try {
+      const hasPending = await TaskStore.hasPendingTasks(taskId);
+      if (!hasPending && typeof statusUpdater === 'function') {
+        await statusUpdater('idle', '任务队列已处理完成');
+      }
+    } catch (error) {
+      console.error('[BatchRequester] done 检查任务状态失败:', error);
+    } finally {
+      taskRequesters.delete(key);
+    }
+  });
+
+  batchRequester.on('error', (error) => {
+    console.error('[BatchRequester] 任务执行错误:', error);
+  });
+
+  batchRequester.start();
+  taskRequesters.set(key, batchRequester);
+  return batchRequester;
+}
+
 /**
  * 解析 Cookie 字符串
  */
@@ -225,57 +397,15 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
 
     console.log(`[Task] 实际获取到 ${allCookies.length} 个 cookies `);
 
-    // 创建 BatchRequester 实例
-    const batchRequester = new BatchRequester({
-      sdk: null, // 函数模式下不需要 SDK
-      concurrency: config.task?.concurrency || 10,
-      lowThreshold: config.task?.lowThreshold || 50,
-    });
-
-    // 监听结果
-    batchRequester.on('result', async (result) => {
-        console.log('发送结果:', result);
-        //判断各种状态 执行更新数据库 发送统计数据 扣减余额
-        if (result.code === 0) {
-          //更新redis中的待私信总数 -1 调用 quotaService 去减去余额
-          let pendingResult = await QuotaService.decreaseTaskPendingCount({uid: result.uid, taskId: taskId, amount: 1});
-          if (pendingResult.success) {
-            console.log(`[Task] 用户 ${result.uid} 任务 ${taskId} 待私信总数 -1 成功`);
-          } else {
-            console.error(`[Task] 用户 ${result.uid} 任务 ${taskId} 待私信总数 -1 失败: ${pendingResult.message}`);
-          }
-          await incrementTaskProgress(taskId, 'success', 1);
-          await emitTaskProgress(socketManager, result.uid, taskId);
-          //发送任务统计到前端
-          socketManager.emitToUid(result.uid, 'task:status', { status: 'completed', message: '任务已完成' });
-        } else {
-           console.error(`[Task] 用户 ${result.uid} 任务 ${taskId} 发送失败: ${result.message}`);
-           //扣减失败停止任务
-          //更改任务队列状态为停止
-           await incrementTaskProgress(taskId, 'fail', 1);
-           await emitTaskProgress(socketManager, result.uid, taskId);
-          //  if (typeof statusUpdater === 'function') {
-          //    await statusUpdater('stopped', '任务已完成');
-          //  }
-          //  socketManager.emitToUid(result.uid, 'task:status', { status: 'completed', message: '任务已完成' });
-        }
-    });
-
-    batchRequester.on('done', () => {
-      console.log('[BatchRequester] 所有任务完成');
-      
-    });
-
-    batchRequester.on('needMore', (currentLength, neededLength) => {
-      console.log(`[BatchRequester] 需要加载更多任务，当前队列长度: ${currentLength}，需要加载: ${neededLength}`);
-      if (typeof onNeedMore === 'function') {
-        onNeedMore(neededLength);
-      }
-    });
-
-    batchRequester.on('error', (error) => {
-      console.error('[BatchRequester] 任务执行错误:', error);
-    });
+    // 为当前用户 + 任务获取（或创建）单例 BatchRequester
+    const userId = tasks[0]?.userId;
+    const batchRequester = getOrCreateBatchRequester(
+      socketManager,
+      userId,
+      taskId,
+      onNeedMore,
+      statusUpdater
+    );
 
     // 为每个任务分配一个 Cookie 并添加任务
     for (let i = 0; i < tasks.length; i++) {
@@ -334,28 +464,18 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
         sendSequenceId,
       };
 
-      // 使用函数模式添加任务
+      // 使用函数模式添加任务，仅负责调用 sendText 并返回结果
       batchRequester.addTask(async () => {
         try {
-          // 执行 sendText
           const result = await sendText(requestData);
-          
-          // 更新 Cookie 使用次数
-          try {
-            await dbConnection.execute(
-              `UPDATE ${tableName} SET used_count = used_count + 1, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
-              [cookieId]
-            );
-          } catch (updateError) {
-            console.error(`[Task] 更新 Cookie 使用次数失败 (ID: ${cookieId}):`, updateError.message);
-          }
           // 返回结果，包含任务信息
           return {
             ...result,
             uid: task.uid,
             batchNo: task.batchNo,
             cookieId,
-            taskId
+            taskId,
+            task
           };
         } catch (error) {
           return {
@@ -365,14 +485,12 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
             uid: task.uid,
             batchNo: task.batchNo,
             cookieId,
-            taskId
+            taskId,
+            task
           };
         }
       });
     }
-
-    // 启动批量处理
-    batchRequester.start();
 
   } catch (error) {
     console.error('[Task] 批量处理任务失败:', error);
@@ -561,6 +679,19 @@ function initSocketServer(httpServer) {
       if (currentStatus === 'running') {
         const response = { success: false, message: '任务已在运行中' };
         broadcastStatus('running', '任务已在运行中');
+        console.log('任务已在运行中....');
+        if (typeof callback === 'function') {
+          callback(response);
+        }
+        return;
+      }
+
+      const hasPending = await TaskStore.hasPendingTasks(taskId);
+      console.log(`[Socket] 用户 ${uid} 任务 ${taskId} 是否有待处理队列: ${hasPending}`);
+      if (!hasPending) {
+        const response = { success: false, message: '任务已完成，当前无待处理队列' };
+        const statusLabel = currentStatus || 'idle';
+        broadcastStatus(statusLabel, '任务队列已处理完成');
         if (typeof callback === 'function') {
           callback(response);
         }
@@ -605,22 +736,34 @@ function initSocketServer(httpServer) {
     // 获取任务状态事件
     socket.on('task:getStatus', async (data, callback) => {
       const latestStatus = await TaskStore.getTaskStatus(taskId);
-      const statusValue = latestStatus?.status || taskStatus.status || 'idle';
+      let statusValue = latestStatus?.status || taskStatus.status || 'idle';
+      let message =
+        latestStatus?.message ||
+        (statusValue === 'running'
+          ? '任务处理中'
+          : statusValue === 'stopped'
+            ? '任务已停止'
+            : '任务已完成或待命');
+
+      // 如果状态仍为 running 但队列已无任务，主动更新为 idle
+      if (statusValue === 'running') {
+        const hasPending = await TaskStore.hasPendingTasks(taskId);
+        if (!hasPending) {
+          await updateStatus('idle', '任务队列已处理完成');
+          statusValue = 'idle';
+          message = '任务队列已处理完成';
+        }
+      }
+
       const isRunning = statusValue === 'running';
       const response = {
         success: true,
         isRunning,
         taskId,
         status: statusValue,
-        message:
-          latestStatus?.message ||
-          (statusValue === 'running'
-            ? '任务处理中'
-            : statusValue === 'stopped'
-              ? '任务已停止'
-              : '任务已完成或待命'),
+        message,
       };
-      broadcastStatus(statusValue, response.message);
+      broadcastStatus(statusValue, message);
       if (typeof callback === 'function') {
         callback(response);
       }

@@ -7,7 +7,7 @@ class TaskStore {
   constructor() {
     this.queueKeyPrefix = 'tasks:zqueue';
     this.taskStatusPrefix = 'tasks:status';
-    this.taskCountPrefix = 'tasks:count';
+    this.taskCountPrefix = 'task:total';
   }
 
   getQueueKey(userId) {
@@ -105,6 +105,7 @@ class TaskStore {
 
   async hasPendingTasks(taskId) {
     const count = await this.getTaskCount(taskId);
+    console.log(`[TaskStore] 任务 ${taskId} 存在任务条数: ${count}`);
     return count > 0;
   }
 
