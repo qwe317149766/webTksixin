@@ -10,7 +10,7 @@ class TaskStore {
     this.taskCountPrefix = 'task:total';
   }
 
-  getQueueKey(userId) {
+  getQueueKey(userId, taskId) {
     if (userId === undefined || userId === null) {
       throw new Error('userId 不能为空');
     }
@@ -18,7 +18,14 @@ class TaskStore {
     if (!normalized) {
       throw new Error('userId 不能为空字符串');
     }
-    return `${this.queueKeyPrefix}:${normalized}`;
+    if (taskId === undefined || taskId === null) {
+      throw new Error('taskId 不能为空');
+    }
+    const normalizedTaskId = String(taskId).trim();
+    if (!normalizedTaskId) {
+      throw new Error('taskId 不能为空字符串');
+    }
+    return `${this.queueKeyPrefix}:${normalized}:${normalizedTaskId}`;
   }
 
   getBatchUidKey(batchNo) {
@@ -226,7 +233,7 @@ class TaskStore {
     const existingUids = await redis.smembers(batchUidKey);
     const existingSet = new Set(existingUids || []);
 
-    const queueKey = this.getQueueKey(userId);
+    const queueKey = this.getQueueKey(userId, taskId);
       console.log('queueKey', queueKey);
     // 如果有批次信息，保存到 Redis
     if (payload.batchInfo) {
@@ -304,8 +311,11 @@ class TaskStore {
    * 获取所有任务（按 score，从旧到新）
    * @returns {Array}
    */
-  async listTasks(userId) {
-    const queueKey = this.getQueueKey(userId);
+  async listTasks(userId, taskId) {
+    if (!taskId) {
+      throw new Error('taskId 不能为空');
+    }
+    const queueKey = this.getQueueKey(userId, taskId);
     const members = await redis.zrange(queueKey, 0, -1, 'WITHSCORES');
     if (!members.length) return [];
 
@@ -336,9 +346,11 @@ class TaskStore {
   /**
    * 根据批次号获取任务
    * @param {string} batchNo
+   * @param {string} userId
+   * @param {string} taskId
    * @returns {Array}
    */
-  async listByBatch(batchNo, userId) {
+  async listByBatch(batchNo, userId, taskId) {
     if (!batchNo || typeof batchNo !== 'string') {
       return [];
     }
@@ -346,7 +358,10 @@ class TaskStore {
     if (!normalized) {
       return [];
     }
-    const tasks = await this.listTasks(userId);
+    if (!taskId) {
+      throw new Error('taskId 不能为空');
+    }
+    const tasks = await this.listTasks(userId, taskId);
     return tasks.filter(task => task.batchNo === normalized);
   }
 
@@ -355,17 +370,18 @@ class TaskStore {
    * @param {number} batchSize - 批量大小，默认10
    * @returns {Array}
    */
-  async dequeueTask(userId, taskId = null, batchSize = 10) {
+  async dequeueTask(userId, taskId, batchSize = 10) {
     if (userId === undefined || userId === null) {
       return [];
     }
+    if (!taskId) {
+      throw new Error('taskId 不能为空');
+    }
 
-    const queueKey = this.getQueueKey(userId);
+    const queueKey = this.getQueueKey(userId, taskId);
     if (batchSize <= 0) batchSize = 10;
     
-    // 如果指定了 taskId，需要获取更多任务以便过滤
-    const fetchSize = taskId ? batchSize * 3 : batchSize;
-    const members = await redis.zrange(queueKey, 0, fetchSize - 1, 'WITHSCORES');
+    const members = await redis.zrange(queueKey, 0, batchSize - 1, 'WITHSCORES');
     console.log("members:",members.length)
     if (!members || members.length < 1) return [];
 
@@ -373,15 +389,11 @@ class TaskStore {
     const rawTasks = [];
     const taskCountMap = new Map();
     
-    // 解析任务，如果指定了 taskId，只保留匹配的任务
+    // 解析任务（队列 key 已基于 taskId，所以所有任务都属于该 taskId）
     for (let i = 0; i < members.length; i += 2) {
       const rawTask = members[i];
       try {
         const task = JSON.parse(rawTask);
-        // 如果指定了 taskId，只处理匹配的任务
-        if (taskId && task.taskId !== taskId) {
-          continue;
-        }
         rawTasks.push(rawTask);
         tasks.push({
           ...task,
@@ -397,6 +409,7 @@ class TaskStore {
         }
       } catch (error) {
         // 忽略格式错误的任务
+        console.log("error:",error)
       }
     }
 
@@ -422,22 +435,31 @@ class TaskStore {
       await Promise.all(batchUidRemovals);
     }
 
-    // 更新 taskId 对应的任务计数
-    const countUpdates = Array.from(taskCountMap.entries()).map(([tId, count]) =>
-      this.incrementTaskCount(tId, -count)
-    );
-    if (countUpdates.length > 0) {
-      await Promise.all(countUpdates);
-    }
+    // 根据 taskId 减少任务计数（按 taskId 进行计算）
+   
 
-    // 获取批次信息（按批次号去重）
-    const batchNos = Array.from(new Set(tasks.map(t => t.batchNo).filter(Boolean)));
-    const batchInfoMap = new Map();
+    // 根据 taskId 获取订单信息（按 taskId 去重）
+    const taskIds = Array.from(new Set(tasks.map(t => t.taskId).filter(Boolean)));
+    const taskInfoMap = new Map();
     await Promise.all(
-      batchNos.map(async batchNo => {
-        const info = await this.getBatchInfo(batchNo);
-        if (info) {
-          batchInfoMap.set(batchNo, info);
+      taskIds.map(async taskId => {
+        try {
+          const taskStr = await redis.get(`task:${taskId}`);
+          if (taskStr) {
+            const taskData = JSON.parse(taskStr);
+            // 提取批次信息（参考 /api/v1/tk-task/submit 接口）
+            const batchInfo = {
+              content: taskData.content || [], // content 可能是数组
+              msgType: Number(taskData.msgType ?? 0),
+              proxy: taskData.proxy || '',
+              sendType: Number(taskData.sendType ?? 0),
+              createdAt: taskData.createdAt || Date.now(),
+              updatedAt: taskData.updatedAt || Date.now(),
+            };
+            taskInfoMap.set(taskId, batchInfo);
+          }
+        } catch (error) {
+          console.error(`[TaskStore] 获取任务信息失败 (taskId: ${taskId}):`, error.message);
         }
       })
     );
@@ -445,7 +467,7 @@ class TaskStore {
     // 合并批次信息
     return tasks.map(task => ({
       ...task,
-      batchInfo: batchInfoMap.get(task.batchNo) || null,
+      batchInfo: taskInfoMap.get(task.taskId) || null,
     }));
   }
 
@@ -453,8 +475,11 @@ class TaskStore {
    * 查看队首任务
    * @returns {Object|null}
    */
-  async peekTask(userId) {
-    const queueKey = this.getQueueKey(userId);
+  async peekTask(userId, taskId) {
+    if (!taskId) {
+      throw new Error('taskId 不能为空');
+    }
+    const queueKey = this.getQueueKey(userId, taskId);
     const members = await redis.zrange(queueKey, 0, 0, 'WITHSCORES');
     if (!members.length) return null;
     try {
@@ -473,8 +498,11 @@ class TaskStore {
    * 获取队列长度
    * @returns {number}
    */
-  async size(userId) {
-    const queueKey = this.getQueueKey(userId);
+  async size(userId, taskId) {
+    if (!taskId) {
+      throw new Error('taskId 不能为空');
+    }
+    const queueKey = this.getQueueKey(userId, taskId);
     return redis.zcard(queueKey);
   }
 }

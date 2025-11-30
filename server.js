@@ -740,21 +740,21 @@ app.post('/api/v1/tk-task/enqueue', async (req, res) => {
     });
 
     // 检查任务状态，如果任务正在运行，则触发任务处理
-    try {
-      const taskStatus = await TaskStore.getTaskStatus(taskId);
-      if (taskStatus && taskStatus.status === 'running') {
-        console.log(`[API] 任务 ${taskId} 正在运行，触发任务处理`);
-        const triggered = triggerTaskProcessing(user.uid, taskId);
-        if (!triggered) {
-          console.log(`[API] 任务 ${taskId} 处理器未找到，可能需要先通过 Socket 连接`);
-        }
-      } else {
-        console.log(`[API] 任务 ${taskId} 状态为 ${taskStatus?.status || 'idle'}，不触发任务处理`);
-      }
-    } catch (error) {
-      console.error(`[API] 触发任务处理失败:`, error);
-      // 不阻止接口返回，只记录错误
-    }
+    // try {
+    //   const taskStatus = await TaskStore.getTaskStatus(taskId);
+    //   if (taskStatus && taskStatus.status === 'running') {
+    //     console.log(`[API] 任务 ${taskId} 正在运行，触发任务处理`);
+    //     const triggered = triggerTaskProcessing(user.uid, taskId);
+    //     if (!triggered) {
+    //       console.log(`[API] 任务 ${taskId} 处理器未找到，可能需要先通过 Socket 连接`);
+    //     }
+    //   } else {
+    //     console.log(`[API] 任务 ${taskId} 状态为 ${taskStatus?.status || 'idle'}，不触发任务处理`);
+    //   }
+    // } catch (error) {
+    //   console.error(`[API] 触发任务处理失败:`, error);
+    //   // 不阻止接口返回，只记录错误
+    // }
 
     return Response.success(res, {
       ...result,

@@ -118,6 +118,9 @@ const batchRequesterDoneFlags = new Map(); // key: `${userId}:${taskId}` -> bool
 // 跟踪每个任务的执行次数
 const taskExecutionCounts = new Map(); // key: `${userId}:${taskId}` -> { total: number, success: number, fail: number }
 
+// 跟踪每个 cookieId 的连续 -10001 错误次数
+const cookieError10001Counts = new Map(); // key: `${cookieId}` -> number
+
 // 全局任务处理器映射，用于外部触发任务处理
 const globalTaskProcessors = new Map(); // key: `${userId}:${taskId}` -> triggerFn
 
@@ -201,7 +204,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           return;
         }
         console.log(
-          `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 待私信总数 -1 成功`
+          `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 待私信总数 -1 成功`
         );
         try {
           await dbConnection.execute(
@@ -234,6 +237,10 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
             const cookieMapping = uidCookieMap.get(uidKey);
             uidCookieMap.delete(uidKey);
             console.log(`[Task] 任务成功，清理接收者 ${receiverUid} 的 Cookie 映射 (Cookie ID: ${cookieMapping.cookieId})，使用完毕`);
+            // 任务成功，重置该 cookieId 的连续错误计数
+            if (cookieMapping.cookieId) {
+              cookieError10001Counts.delete(cookieMapping.cookieId);
+            }
           }
         }
       } else {
@@ -244,9 +251,46 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
         // 不同错误码更新 Cookie 状态
         let needRetry = false;
         let tongJs = true
-        if (data.code === -10000) {
+        console.log("[data.code]:",data.code)
+        
+        // 如果不是 -10001 错误，重置该 cookieId 的连续错误计数
+        if (data.code !== -10001 && cookieId) {
+          cookieError10001Counts.delete(cookieId);
+        }
+        
+        if (data.code === -10001) {
+          // 处理 -10001 错误，跟踪连续错误次数
+          if (cookieId) {
+            const currentCount = (cookieError10001Counts.get(cookieId) || 0) + 1;
+            cookieError10001Counts.set(cookieId, currentCount);
+            
+            console.log(
+              `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 错误码 -10001 (Cookie ID: ${cookieId})，连续错误次数: ${currentCount}`
+            );
+            
+            // 如果连续超过3次，将账号状态改为已退出
+            if (currentCount >= 3) {
+              console.log(
+                `[Task] Cookie ID ${cookieId} 连续 ${currentCount} 次返回 -10001，将账号状态改为已退出`
+              );
+              await dbConnection.execute(
+                `UPDATE ${tableName} SET status = 3 WHERE id = ?`,
+                [cookieId]
+              );
+              // 清除计数器
+              cookieError10001Counts.delete(cookieId);
+              needRetry = true;
+            } else {
+              // 未达到3次，继续重试
+              needRetry = true;
+            }
+          } else {
+            // 没有 cookieId，直接重试
+            needRetry = true;
+          }
+        } else if (data.code === -10000) {
           console.log(
-            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 维护社区: ${JSON.stringify(
+            `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 维护社区: ${JSON.stringify(
               data.data
             )}`
           );
@@ -254,10 +298,10 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
             `UPDATE ${tableName} SET status = 5 WHERE id = ?`,
             [cookieId]
           );
-
+          needRetry = true;
         } else if (data.code === -1) {
           console.log(
-            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 退出状态: ${JSON.stringify(
+            `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 退出状态: ${JSON.stringify(
               data.data
             )}`
           );
@@ -268,7 +312,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           needRetry = true;
         } else if (data.code === 10004) {
           console.log(
-            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 发送端被限制: ${JSON.stringify(
+            `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 发送端被限制: ${JSON.stringify(
               data.data
             )}`
           );
@@ -279,7 +323,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           needRetry = true;
         } else if (data.code === 10002) {
           console.log(
-            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 发送太快: ${JSON.stringify(
+            `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 发送太快: ${JSON.stringify(
               data.data
             )}`
           );
@@ -290,7 +334,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           needRetry = true;
         } else if (data.code === -10002) {
           console.log(
-            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 网络异常: ${JSON.stringify(
+            `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 网络异常: ${JSON.stringify(
               data.data
             )}`
           );
@@ -298,7 +342,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           needRetry = true;
         } else {
           console.error(
-            `[Task] 用户 ${result.uid} 任务 ${taskIdFromResult} 发送失败: ${JSON.stringify(
+            `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 发送失败: ${JSON.stringify(
               data.data
             )}`
           );
@@ -317,7 +361,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
         
         if (needRetry) {
           console.log('重新添加队列',task)
-          const queueKey = TaskStore.getQueueKey(task.userId)
+          const queueKey = TaskStore.getQueueKey(task.userId, task.taskId)
           console.log('queueKey:',queueKey)
           const retryResult = await redis.zadd(queueKey, Date.now(), JSON.stringify(task));
           console.log("retryResult:",retryResult)
@@ -522,8 +566,12 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
       // 将任务重新放回队列
       const userId = tasks[0]?.userId;
       if (userId) {
-        const queueKey = TaskStore.getQueueKey(userId);
         for (const task of tasks) {
+          if (!task.taskId) {
+            console.warn(`[Task] 任务缺少 taskId，跳过:`, task);
+            continue;
+          }
+          const queueKey = TaskStore.getQueueKey(task.userId, task.taskId);
           const entry = JSON.stringify({
             batchNo: task.batchNo,
             taskId: task.taskId,
