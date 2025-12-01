@@ -218,7 +218,6 @@ class CurlHttpSdk extends EventEmitter {
 				if (body instanceof Uint8Array || body instanceof ArrayBuffer) {
                 const buf = Buffer.from(body);
                 let pos = 0;
-				console.log("CurlFeature:",CurlFeature)
                 // handle.enable(CurlFeature.NoDataParsing);
                 handle.setOpt('POST', true);
                 handle.setOpt('READFUNCTION', (buffer, size, nmemb) => {

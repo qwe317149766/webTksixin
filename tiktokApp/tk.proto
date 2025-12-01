@@ -1,0 +1,504 @@
+syntax = "proto3";
+package titok;
+// mwzzzh对应headers中的argus
+message Argus {
+   uint32 magic = 1; // 0x20200929 << 1  固定值
+   uint32 version = 2; // 2
+   uint64 rand = 3; // rand() << 1  随机数
+   string msAppID = 4; // "1233"  固定值
+   optional string deviceID = 5; // "7522680299320641079"device_id
+   string licenseID = 6; // "2142840551"  固定值
+   optional string appVersion = 7;  //40.6.3
+   string sdkVersionStr = 8; // "v05.02.00-ov-android"
+   uint32 sdkVersion = 9; // sdk_version << 1   0x5020020<<1
+   bytes envCode = 10; // "" 空字符串
+   uint32 platform = 11; //我们hook真机里面没有这个
+   uint64 createTime = 12; // x_khronos << 1
+   optional bytes bodyHash = 13; // sm3(x-ss-stub)[:6] 如果不存在就是对8字节0进行sm3
+   optional bytes queryHash = 14; // sm3(query_string)[:6]
+   optional ActionRecord actionRecord = 15; //当前请求计数<<1,48,46,app启动时间<<1
+   optional string secDeviceToken = 16;// From /sdi/get_token request
+   optional uint64 isAppLicense = 17; // equal to createTime
+   optional bytes pskHash = 18; // 对x-bd-client-key进行md5，可以固定
+   optional bytes pskCalHash = 19; // 对上面的query 16进制形式+16字节0+30进行sm3
+   string pskVersion = 20; // Before logging in, it is "none", and after logging in, it is x-bd-kmsv(0)
+   uint32 callType = 21; // 624 可以固定
+   optional ChannelInfo channelInfo = 23;
+   optional string seed = 24; // from /ms/get_seed
+   optional uint32 extType = 25; // 2, 6, 8, 10 are all possible
+   repeated ExtraInfo extraInfo = 26;  //这个内容应该是get_seed接口产生的，根据服务器返回结果有8种不同的加密方式，下面还有一个这样的，可能是get_token来的？目前还不清楚
+   optional uint32 unknown28=28;   //1006 不清楚来源，可能是固定的？
+   optional uint32 unknown29=29;   //10 不清楚
+   optional uint32 unknown30=30;   //6   同样不清楚
+   optional uint32 unknown31=31;   //时间戳和不知道什么值进行异或,这个值的来源还没分析
+   optional bytes  unknown32=32;   //不知道什么值，unidbg跑的结果不存在这个值，真机中是有的
+   optional uint32 unknown33=33;   //4
+}
+
+message ExtraInfo {
+   uint32 algorithm = 1; // 2, 4, 6, 8, 10, 12, 14, 16 correspond to different algorithms, this number comes from /ms/get_seed
+   bytes algorithmData = 2; // Use query, ss-stub, 00000001 for calculation
+}
+
+message ChannelInfo {
+   string phoneInfo = 1; // Pixel 6
+   uint32 metasecConstant = 2; // Fixed value 16, get 8 from the address in so, and become 0x10 after shifting and XOR ，这个我们真机中都是18
+   string channel = 3; // googleplay
+   uint32 appVersionConstant = 4; // 0xC60A000 << 1,跟版本有关
+}
+
+message ActionRecord {
+   optional uint32 signCount = 1; // Number of times the algorithm is called, count << 1
+
+   optional uint32 reportCount = 2; // /ri/report number of reports << 1, risk control: There is verification here. The default value of 1388734 is not acceptable when searching for products. Sometimes it is. If you use the default value, a block verification will pop up.
+   optional uint32 settingCount = 3; // /mscc/common_setting reporting times << 1, default value 1388734
+
+   optional uint32 reportFailCount = 4;
+   optional uint32 reportSuccessCount = 5;
+   optional uint32 actionIncremental = 6;
+   optional uint32 appLaunchTime = 7; // app launch time << 1
+}
+
+
+
+// mwzzzh 下面都对应的是mssdk
+
+// 对应get_seed_request
+message SeedEncrypt {
+    string session = 1;    // 12ec4955adf64bc2aea07878d21ca2e2
+    string deviceid = 2;   // 7488214722874394113
+    string os = 3;         // android
+    string sdk_version = 4; //v05.02.00
+}
+message SeedRequest {
+    uint64 s1 = 1; //538969122<<1 固定值 ，sdk请求的标识
+    uint64 s2 = 2; //1<<1
+    uint64 s3 = 3; //2<<1
+    bytes encrypt = 4; //对应SeedEncrypt序列化后的内容
+    uint64 utime = 5; //毫秒级时间戳  1758358646907<<1
+}
+//对应get_seed_response
+message SeedDecrypt {
+    string seed = 1;
+    SeedInfo extra_info = 2;
+}
+message SeedInfo {
+    string algorithm = 1;
+}
+message SeedResponse {
+    uint64 s1 = 1; //538051346<<1
+    uint64 s2 = 2; //1<<1
+    uint64 s3 = 5; //2<<1
+    bytes  seed_decrypt =6 ; // 待解密内容
+}
+
+// 对应ms/dyn/task_request
+message TaskEncrypt {
+    string aid          = 1;  // "1233"
+    string device_id    = 2;  // "7561502150381536823"
+    string platform     = 3;  // "android"
+    string version_name = 4;  // "v05.02.00"
+    string build_name   = 6;  // "v05.02.00-alpha.9"
+    uint32 type         = 7;  // 4
+//    string randd        = 8;  // 这个是我们自己添加的
+}
+message TaskRequest {
+    uint64 s1 = 1; //538969122<<1 固定值 ，sdk请求的标识
+    uint64 s2 = 2; //1<<1
+    uint64 s3 = 3; //2<<1
+    bytes encrypt = 4; //对应SeedEncrypt序列化后的内容
+    uint64 utime = 5; //毫秒级时间戳  1758358646907<<1
+}
+// 对应ms/dyn/report_request
+message DynReportEncrypt {
+  string aid = 1;                      // "1233"
+  string device_id = 2;                // "7561502150381536823"
+  string platform = 3;                 // "android"
+  string version_name = 4;             // "v05.02.00"
+  string unknown2 = 5;             // "200"
+  Signature sig = 6;
+  message Signature {
+    uint32 alg = 1;                    // 458
+    string key = 2;                    // "EAGWA35bl80b1auz"
+    string extra = 3;                  // "0"
+  }
+}
+
+message DynReportRequest {
+    uint64 s1 = 1; //538969122<<1 固定值 ，sdk请求的标识
+    uint64 s2 = 2; //1<<1
+    uint64 s3 = 3; //2<<1
+    bytes encrypt = 4; //对应SeedEncrypt序列化后的内容
+    uint64 utime = 5; //毫秒级时间戳  1758358646907<<1
+}
+
+//对应get_token_request
+message TokenRequest {
+    uint64 s1 = 1; //538969122<<1 可以固定
+    uint64 s2 = 2; //1<<1 可以固定
+    uint64 s3 = 3; //2<<1 可以固定
+    bytes token_encrypt = 4; // 来自于下面TokenEncrypt序列化后的内容
+    uint64 utime = 5; //微秒级时间戳1758358529601<<1
+
+}
+message TokenEncrypt {
+    TokenEncrypt_one one =1;
+    optional string last_token = 2; // 上一次请求所生成的token ，如果不存在(可能是过期了)，那么这一项为空
+    string os = 3; // android
+    string sdk_ver = 4; //v05.02.00-alpha.9-ov-android  sdk 版本
+    uint64 sdk_ver_code = 5; //84017184<<1 可以固定
+    string msAppID = 6; //1233
+    string appVersion = 7; //40.6.3
+    string device_id = 8; //7549120105251816978 7522680299320641079
+    TokenEncrypt_two two = 9;
+    uint64 stable1 = 11 ; //1999997
+    // UUID  之类的 随机就好
+    string unknown2 = 12; //187611c7-5e9f-4439-be33-dc7904e06065 35de1eb2-9cb7-44cf-bd26-5386ec8353f7 4e40c692-7c6b-45eb-9b7c-dd78ffa30e15
+    string notset1 = 15; //!notset!
+    uint64 stable2 = 16; // 1999997
+}
+message TokenEncrypt_one {
+    string notset1 = 1;   // !notset!
+    string changshang = 2;  // google xiaomi
+    string xinghao = 3; // pixel 6 MI6
+    string notset2 = 4; // !notset!
+    string os = 5;      //Android
+    string os_version = 6; //13 11
+    TokenEncrypt_one_one tokenEncrypt_one_one = 7;
+    uint32 density_dpi = 8;  //840  420<<1 屏幕密度
+    string build_id = 9; //TQ1A.230205.002 BP1A.250505.005
+    uint64 os_build_time = 10; //对应 ro.build.date.utc，系统第一次编译的时间 1673310455<<1 1743029832<<1
+    string appLanauge = 11; //zh_CN en_
+    string time_zone = 12; // America/New_York,-5
+    uint64 unknown2 = 13; // 这个不清楚是什么 我们取随机数1,100 <<1
+    uint64 unknown3 = 14; //这个同样不清楚 ，和上面一样随机了 ，但是这个数字按理来说势必13大一点的
+    uint64 unknown4 = 15; // 不清楚，不同设备的值都是相互独立的大概是 7943884800<<1 7958913024<<1
+    uint64 stable1 = 16 ; //118396899328<<1  不同设备的值是相同的
+    uint64 stable2 = 17;  //118396899328<<1  不同设备的值是相同的,跟16相同
+    uint64 unknown5 = 18; //不清楚，这个同个设备每次的值也不一样，后面我们直接随机99822125056<<1 70566678528<<1 70692827136<<1
+    string notset3 = 19;  //!notset!
+    string notset4 = 20;  //!notset!
+    string android_id = 21; //android_id c65ef8e45e3962e2 cb773f1c2c95bb66
+    string notset5 = 22; //!notset!
+    string notset6 = 23; //!notset!
+    string MediaDrm = 24; //android.media.MediaDrm XGLBzRJRAagAiXYczSAvjtLEwT9VJYq86JBRjhtYTJQ= D9A2Y62D2yt5nE415zaUnmUGNYclRnQKAC665cMHpkk=
+    uint64 laungh_time = 25; //1758173836<<1 1758344285<<1  大概率是设备启动时间
+    string boot_id = 26;  // 这个值每次重启都会改变 ，直接随即就好 	0928238b-94f5-4b81-bb81-34aa8959c561 140c1950-b033-4b76-ac87-638cd1fd40bb
+    uint64 unknown6 = 27; // 不清楚，但这个值是在变得，随机好了 432172032000<<1 377642872832<<1
+    string notset7 = 28; //!notset!
+    uint64 stable3 = 29; //1999997
+    uint64 stable4 = 30; //1999997
+    string notset8 = 31; //!notset!
+    string default_gateway = 32; // 192.168.182.3 192.168.182.54  网关是您本地网络连接到外部互联网的“出口”或“大门”通常会被设置为一个简单且固定的地址，可以固定
+    string ip_dns = 33; // 192.168.182.93 对应当前ip v4 dns
+    string notset9 = 34;
+    string netset10 = 35;
+    uint64 stable5 = 36; //1999997
+    uint64 stable6 = 37; //1999997
+    string notset11 = 38;
+    string notset12 = 39;
+    string ip_array = 40; // ["192.168.182.93","0.0.0.0"]
+    uint64 stable7 = 41; //1999997
+    uint64 stable8 = 42; //1999997
+    string notset13 = 44;
+    uint64 expired_time = 45; // 这个时间不是很固定 1758344304<<1 1758358642<<1
+    uint64 send_time = 46; // 请求发送时间 1758173842<<1 1758344292<<1
+    string install_path = 47; ///data/app/~~XYWbnv21Sfa5S5_8EDTvFA==/com.zhiliaoapp.musically-GPxy0Jhw9PvXx39FAwjm2Q==/base.apk /data/app/~~30YWW5tbWW5r3Zr412T06w==/com.zhiliaoapp.musically-5xwrN8HWz4XeNjDkfiUimQ==/base.apk
+    uint64 os_api = 48 ; // 35<<1 33<<1 对应的android_api的版本<<1
+    uint64 stable9 = 49; //1999997
+    string notset14 = 50;
+    uint64 stable10= 51; //1999997
+    uint64 stable11= 52; //1999997
+    string notset15 = 53;
+    string notset16 = 54;
+    string notset17 = 55;
+    uint64 stable12= 56; //1999997
+
+}
+
+message  TokenEncrypt_one_one {
+    fixed64 unknown1 =1 ; // 3472332702763464752 两个不同手机相同版本都是这个值，我们也固定好了
+}
+message TokenEncrypt_two {
+    uint64 s1 = 1;   //下面的也全都是24<<1 ，全部可以固定
+    uint64 s2 = 2;
+    uint64 s3 = 3;
+    uint64 s4 = 4;
+    uint64 s5 = 5;
+    uint64 s6 = 6;
+    uint64 s7 = 7;
+    uint64 s8 = 8;
+}
+//对应get_token_reponse
+message TokenDecrypt {
+    string token = 1; //
+    uint64 s2 = 2; //200<<1
+}
+message TokenResponse {
+    uint64 s1 = 1; //538051346<<1
+    uint64 s2 = 2; //1<<1
+    uint64 s3 = 5; //1<<1
+    bytes token_decrypt = 6; //待解密内容
+}
+
+//对应get_report_request
+message ReportRequest {
+    uint64 s1 = 1; //538969122<<1
+    uint64 s2 = 2; //1<<1
+    uint64 s3 = 3; //1<<1
+    bytes report_encrypt = 4; //加密内容
+    uint64 utime = 5; //1758358649587<<1 微秒级时间戳
+}
+
+message ReportEncrypt {
+
+}
+//对应get_report_response
+message ReprotResponse {
+
+}
+message  ReportDecrypt {
+
+}
+
+
+
+
+
+// mwzzzh 下面为私信相关内容
+message PrivateMessage {
+      // 字段 1: 一个整数标识符
+  int32 unknown_field_1 = 1; // 定值100
+
+  // 字段 2: 另一个整数标识符
+  int32 unknown2 = 2; // 示例值: 701967 random.randint(701111,709999)
+
+  // 字段 3: 来源类型
+  string source = 3; // 示例值: "local"
+
+  // 字段 4: 一个很长的字符串，可能是签名或 token
+  string signature = 4; // 示例值: "041fe4d3..."
+
+  // 字段 5: 整数标识
+  int32 unknown_field_5 = 5; // 示例值: 1
+
+  // 字段 6: 整数标识
+  int32 unknown_field_6 = 6; // 示例值: 0
+
+  // 字段 7: 字符串类型的数字
+  string unknown_field_7_str = 7; // 示例值: "0"
+
+  // 字段 8: 包含事件核心细节的嵌套消息
+  EventDetails details = 8;
+
+  // 字段 9: 请求或会话 ID
+  string device_id = 9; // "7550968885031290423" 当前设备id
+
+  // 字段 10: 应用商店来源
+  string app_store = 10; // 示例值: "googleplay"
+
+  // 字段 11: 操作系统
+  string os = 11; // 示例值: "android"
+
+  // 字段 12: 设备型号
+  string device_model = 12; // 示例值: "Pixel 6"
+
+  // 字段 13: 操作系统版本 (以字符串形式)
+  string os_version = 13; // 示例值: "15"
+
+  // 字段 14: 应用版本号
+  string app_version = 14; // 示例值: "2024006030"
+
+  // 字段 15: 一系列键值对，用于携带额外的元数据或头部信息
+  repeated KeyValuePair metadata = 15;
+
+  // 字段 18: 整数标识
+  optional uint32 unknown_field_18 = 18; // 示例值: 0
+
+  // 字段 21: 一个空的嵌套消息
+  Empty empty_field_21 = 21;
+}
+// 对应字段 8 的嵌套消息
+message EventDetails {
+  // 这里的 100 是 map 的 key，而不是字段编号。
+  // Protobuf 中没有直接用数字作为字段名的语法。
+  // 这种结构最接近于一个 map，其中 key 是整数，value 是另一个消息。
+  MessageInfo message_content  = 100;
+}
+// 对应 EventDetails map 中的 value
+message MessageInfo {
+  // 字段 1: 组合 ID 字符串
+  string composite_id = 1; // 示例值: "0:1:7302062897214489646:7553148093916546062"  两个用户id之类的东西
+
+  // 字段 2: 消息类型或状态
+  int32 type = 2; // 示例值: 1
+
+  // 这个不清楚是什么，估计和对话双方有关，只要是相同的两个用户，这个值都是相同的
+  int64 conversation_id = 3; // 示例值: 7553549582249115934
+
+  // 字段 4: 负载内容，通常是 JSON 格式的字符串
+  string payload_json = 4; //{"text":"Hello can we make a work","is_card":false,"reference_scene":0,"sendStartTime":1758702170419,"aweType":700}
+
+  // 字段 5: 消息相关的属性，可重复
+  repeated KeyValuePair attributes = 5;
+
+  // 字段 6: 另一个状态或类型代码
+  int32 awe_type = 6; // 示例值: 7 (从 payload_json 的 aweType 推断)
+
+  // 字段 8: 消息的唯一标识符，可能是 UUID
+  string message_uuid = 8; // 示例值: "012965fa-..." 又是一个uuid
+
+  // 字段 13, 14, 18, 19: 空的嵌套消息，可能用于占位或表示存在性
+  Empty empty_field_13 = 13;
+  Empty empty_field_14 = 14;
+  Empty empty_field_18 = 18;
+  Empty empty_field_19 = 19;
+}
+// 用于表示可重复的键值对结构 (字段 15 和 字段 5 in MessageInfo)
+message KeyValuePair {
+  string key = 1;
+  string value = 2;
+}
+// 用于表示所有空的 message 结构
+message Empty {}
+
+// 下面的对应私信的响应，这个暂时不要了
+
+//下面对应创建对话对应的 message 结构提
+message CreateAConversation {
+  uint64 cmd_id = 1;                         // 字段1, 值: 609
+  uint64 sequence_id = 2;                    // 字段2, 值: 471951 (从十六进制解码)
+  string type = 3;                          // 字段3, 值: "local"
+  string signature = 4;                    // 字段4, 长字符串
+  uint64 field_5 = 5;                        // 字段5, 值: 1
+  optional uint32 field_6 = 6;                        // 字段6, 值: 0
+  string field_7 = 7;                        // 字段7, 值: "0"
+
+  // 字段8现在被精确定义为一个包含高编号字段的嵌套消息
+  InnerMessage8 message_info = 8;
+
+  string device_id = 9;                     // 字段9
+  string channel = 10;                      // 字段10
+  string os = 11;                     // 字段11
+  string device_type = 12;                  // 字段12
+  string os_version = 13;                   // 字段13
+  string manifest_version_code = 14;        // 字段14
+
+  // 字段15是重复的Header消息，此定义正确
+  repeated Header headers = 15;
+
+  uint64 field_18 = 18;                      // 字段18, 值: 0
+}
+message Header {
+  string key = 1;
+  string value = 2;
+}
+
+// 对应字段8内部的、字段编号为609的消息结构
+// 在之前的版本中被误认为map的value
+message InnerMessage8 {
+  InnerMessage609 m609 = 609;
+}
+message InnerMessage609 {
+    uint64 type  = 1;                    // 示例值: 1
+    repeated uint64 id = 2 [packed=false];
+}
+
+
+message ParticipantsPage {
+    repeated Participant participants = 1;
+    bool has_more = 2;
+    string next_cursor = 3;
+}
+
+// ===== Participant =====
+message Participant {
+    string user_id = 1;
+    string sec_user_id = 2;
+    string nickname = 3;
+    string avatar_url = 4;
+    bool is_blocked = 5;
+}
+
+// ===== ConversationCoreInfo =====
+message ConversationCoreInfo {
+    int64 last_message_timestamp = 1;
+    string last_message_preview = 2;
+    string last_sender_uid = 3;
+}
+
+// ===== ConversationSettingInfo =====
+message ConversationSettingInfo {
+    bool mute_status = 1;
+    bool top_status = 2;
+    bool allow_notifications = 3;
+}
+
+// ===== ConversationInfoV2 =====
+message ConversationInfoV2 {
+    string conversation_id = 1;
+    int64 conversation_short_id = 2;
+    int32 conversation_type = 3;
+    string ticket = 4;
+    ParticipantsPage first_page_participants = 6;
+    int32 participants_count = 7;
+    bool is_participant = 8;
+    int32 inbox_type = 9;
+    int32 badge_count = 10;
+    int32 badge_count_v2 = 11;
+    int64 conversation_rank_version = 12;
+    Participant user_info = 20;
+    ConversationCoreInfo conversation_core_info = 50;
+    ConversationSettingInfo conversation_setting_info = 51;
+    bytes biz_ext = 100;
+}
+
+// ===== SendMessageResponseBody =====
+message SendMessageResponseBody {
+    int64  server_message_id = 1;
+    string extra_info        = 2;
+    int32  status            = 3;
+    string client_message_id = 4;
+    int64  check_code        = 5;
+    string check_message     = 6;
+    string filtered_content  = 7;
+    bool   is_async_send     = 8;
+    string new_ticket        = 9;
+    ConversationInfoV2 conversation = 10;
+    int32  inboxPageCategory = 12;
+    int32  filter_reason     = 13;
+}
+
+// ===== CreateConversationV2ResponseBody =====
+message CreateConversationV2ResponseBody {
+    ConversationInfoV2 conversation = 1;
+    int64  check_code               = 2;
+    string check_message            = 3;
+    string extra_info               = 4;
+    int32  status                   = 5;
+}
+
+// ===== ResponseBody =====
+message ResponseBody {
+    SendMessageResponseBody send_message_body = 100;
+    CreateConversationV2ResponseBody create_conversation_v2_body = 609;
+}
+
+// ===== Response =====
+message Response {
+    int32  cmd                      = 1;
+    int64  sequence_id              = 2;
+    int32  status_code              = 3;
+    string error_desc               = 4;
+    int32  inbox_type               = 5;
+    ResponseBody body               = 6;
+    string log_id                   = 7;
+    repeated string headers         = 8;
+    int64  start_time_stamp         = 9;
+    int64  request_arrived_time     = 10;
+    int64  server_execution_end_time = 11;
+    int32  retry_count              = 12;
+    int64  server_start_time        = 13;
+    string region                   = 14;
+}
+
