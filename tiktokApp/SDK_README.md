@@ -241,6 +241,22 @@ async function main() {
 main();
 ```
 
+## Device/Ticket Guard 工具
+
+`tiktokApp/src/utils/encryption/device_ticket_data.js` 提供了与 Python 版本一致的 `buildGuard`、`generateDeltaKeypair` 等方法，可用于生成 `tt-ticket-guard-*` 相关头部。为了验证 Node 版本与原始 `device_ticket_data.py` 的一致性，提供了对比脚本：
+
+```bash
+# 设备 guard 示例
+node tiktokApp/scripts/compare-device-ticket-data.js \
+  --input tiktokApp/scripts/samples/device_guard_sample.json
+
+# ticket guard 示例
+node tiktokApp/scripts/compare-device-ticket-data.js \
+  --input tiktokApp/scripts/samples/ticket_guard_sample.json
+```
+
+脚本会调用 Node 与 Python 两套实现并比较输出，确保编码保持完全一致。
+
 ## 与 tiktokWeb 的对比
 
 `TiktokAppSdk` 与 `tiktokWeb/TiktokSdk` 类似，都是封装了 TikTok API 功能的 SDK，主要区别：

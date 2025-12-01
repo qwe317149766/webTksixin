@@ -23,7 +23,7 @@ const {
 } = require('../utils/protobuf/protobuf-helper');
 const { mssdkEncrypt, mssdkDecrypt } = require('../utils/encryption/mssdk');
 const { makeHex26_1, makeHex26_2 } = require('../utils/encryption/hex26');
-
+const { buildGuard } = require('../utils/encryption/device_ticket_data');
 /**
  * 简单的内存缓存实现
  * 缓存 seed 和 token，基于 cookieData 的 hash 作为 key
@@ -1022,7 +1022,7 @@ class TikTokService {
         postDataHex
       );
 
-      const requestHeaders = {
+      let requestHeaders = {
         ...headersFromMake,
         'rpc-persist-pyxis-policy-v-tnc': '1',
         'rpc-persist-pyxis-policy-state-law-is-ca': '1',
@@ -1056,7 +1056,14 @@ class TikTokService {
         'Cookie': this.buildCookieString(cookies),
         'Accept': 'application/x-protobuf'
       };
-
+      //调用 build_guard 函数
+      const buildGuard1 = await buildGuard({
+        cookie: cookies,
+        path: '/message/send',
+        privHex:cookies['priv_hex'],
+        isTicket:true
+      });
+      requestHeaders = Object.assign(requestHeaders, buildGuard1);
       const client = this.getHttpClient(proxyUrl);
       const response = await client.post(url, postDataBuffer, {
         headers: requestHeaders,
@@ -1077,12 +1084,7 @@ class TikTokService {
         }
       }
 
-      return {
-        status: response.status,
-        responseHex: buffer.toString('hex'),
-        decoded,
-        json: jsonFallback
-      };
+      return decoded?.body?.send_message_body;
     } catch (error) {
       console.error('Error in sendMessageStandalone:', error);
       throw error;

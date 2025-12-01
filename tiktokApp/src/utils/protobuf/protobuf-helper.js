@@ -623,70 +623,7 @@ async function parseCreateConversationResponse(responseData) {
  */
 async function parsePrivateMessageResponse(responseData) {
   try {
-    const response = decodeResponse(responseData);
-
-    if (!response || typeof response !== 'object') {
-      throw new Error('decodeResponse returned empty object');
-    }
-
-    // 检查错误响应（status_code 字段）
-    if (response.status_code) {
-      const errorCode = String(response.status_code);
-      if (errorCode && (errorCode.includes('200005') || errorCode.match(/^\d{6}$/))) {
-        const errorDesc = response.error_desc || '';
-        const logId = response.log_id || '';
-        console.warn(`Send message returned error code: ${errorCode} (error_desc: ${errorDesc}, log_id: ${logId})`);
-        return {
-          success: false,
-          message: `API returned error: ${errorCode}`,
-          errorCode,
-          errorDesc,
-          logId,
-          raw: response,
-        };
-      }
-    }
-
-    // 从 Response.body.send_message_body 提取信息
-    let success = false;
-    let message = 'Message send status unknown';
-    
-    if (response.body && response.body.send_message_body) {
-      const sendBody = response.body.send_message_body;
-      
-      // 检查 status 字段（字段 3）
-      if (sendBody.status !== undefined && sendBody.status !== null) {
-        // status 为 0 或正数通常表示成功
-        success = sendBody.status === 0 || sendBody.status > 0;
-        message = success ? 'Message sent successfully' : `Message send failed with status: ${sendBody.status}`;
-      }
-      
-      // 检查 checkCode 字段（字段 5），如果存在且为 0 表示成功
-      if (sendBody.check_code !== undefined && sendBody.check_code !== null) {
-        if (sendBody.check_code === 0) {
-          success = true;
-          message = 'Message sent successfully';
-        } else {
-          success = false;
-          message = sendBody.check_message || `Message send failed with check_code: ${sendBody.check_code}`;
-        }
-      }
-      
-      // 检查 extraInfo 字段（字段 2），如果包含 "chat_request_sent" 表示成功
-      if (sendBody.extra_info) {
-        const extraInfo = String(sendBody.extra_info);
-        if (extraInfo.includes('chat_request_sent')) {
-          success = true;
-          message = 'Message sent successfully';
-        }
-      }
-    }
-    
-    return {
-      success: success,
-      message: message,
-      response: response // 返回完整的响应对象以便调试
-    };
+    return decodeResponse(responseData);
   } catch (error) {
     console.error('Error parsing private message response:', error);
     console.error('Response hex (first 200 chars):', responseData.toString('hex').substring(0, 200));
