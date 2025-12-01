@@ -344,6 +344,33 @@ class TikTokService {
   }
 
   /**
+   * 根据 cookies 决定使用的 API 域名
+   */
+  static getApiBaseUrlFromCookies(cookies = {}) {
+    const region =
+      (cookies['store-country-code'] ||
+        cookies['store_country_code'] ||
+        cookies['x-tt-store-region'] ||
+        cookies['x_tt_store_region'] ||
+        '').toString().toLowerCase();
+
+    const isUsRegion = region === 'us';
+    console.log("isUsRegion:",isUsRegion)
+    const baseUrl = isUsRegion
+      ? Settings.TIKTOK_API_BASE_URL
+      : Settings.TIKTOK_API_GLOBAL_BASE_URL;
+
+    let host;
+    try {
+      host = new URL(baseUrl).host;
+    } catch {
+      host = baseUrl.replace(/^https?:\/\//i, '').split('/')[0];
+    }
+
+    return { baseUrl, host };
+  }
+
+  /**
    * 创建 HTTP 客户端（支持代理）
    */
   static getHttpClient(proxyUrl) {
@@ -578,6 +605,9 @@ class TikTokService {
       );
       
       // 6. 构建完整的请求头
+      const { baseUrl: conversationBaseUrl, host: conversationHost } = this.getApiBaseUrlFromCookies(cookies);
+      console.log("conversationHost:",conversationHost)
+      console.log("conversationBaseUrl:",conversationBaseUrl)
       const requestHeaders = {
         ...headers,
         'rpc-persist-pyxis-policy-v-tnc': '1',
@@ -602,16 +632,17 @@ class TikTokService {
         'x-vc-bdturing-sdk-version': '2.3.13.i18n',
         'oec-vc-sdk-version': '3.0.12.i18n',
         'x-tt-request-tag': 'n=0;nr=111;bg=0',
-        'x-tt-store-region': 'us',
-        'x-tt-store-region-src': 'uid',
+        'x-tt-store-region': cookies['store-country-code'] || cookies['store_country_code'] || 'us',
+        'x-tt-store-region-src': cookies['store-country-code-src'] || cookies['store_country_code_src'] || 'uid',
         'User-Agent': cookies['User-Agent'] || cookies['user_agent'] || 'okhttp/3.12.13.20',
         'Content-Type': 'application/x-protobuf',
         'Accept': 'application/x-protobuf', // 明确请求 protobuf 格式响应
+        'Host': conversationHost,
         'Cookie': this.buildCookieString(cookies)
       };
       
-      // 7. 发送请求（直接使用 protobuf Buffer）
-      const url = `${Settings.TIKTOK_API_BASE_URL}/v2/conversation/create`;
+      const url = `${conversationBaseUrl}/v2/conversation/create`;
+      console.log('url:',url)
       const client = this.getHttpClient(proxyUrl);
       
       const response = await client.post(url, postDataBuffer, {
@@ -715,7 +746,7 @@ class TikTokService {
   static buildCookieString(cookies) {
     const cookieParts = [
       `store-idc=useast5`,
-      `store-country-code=${cookies['store-country-code']}`,
+      `store-country-code=${cookies['store-country-code'] || 'us'}`,
       `install_id=${cookies.install_id}`,
       `ttreq=${cookies.ttreq}`,
       `passport_csrf_token=${cookies.passport_csrf_token}`,
@@ -1021,11 +1052,9 @@ class TikTokService {
         queryString,
         postDataHex
       );
-      // https://api22-normal-c-alisg.tiktokv.com
-      //域名判断 如果是us 则 api16-normal-useast5.tiktokv.us 否则 https://api22-normal-c-alisg.tiktokv.com
-      let apiUrl = cookies['store-country-code'] === 'us' ? 'api16-normal-useast5.tiktokv.us' : 'api22-normal-c-alisg.tiktokv.com';
-      const url = `https://${apiUrl}/v1/message/send?${queryString}`;
-      console.log("url:"+url)
+      const { baseUrl: messageBaseUrl, host: messageHost } = this.getApiBaseUrlFromCookies(cookies);
+      const url = `${messageBaseUrl}/v1/message/send?${queryString}`;
+      console.log('url:', url);
       let requestHeaders = {
         ...headersFromMake,
         'rpc-persist-pyxis-policy-v-tnc': '1',
@@ -1055,7 +1084,7 @@ class TikTokService {
         'x-tt-store-region-src': cookies['store-country-code-src'] || 'uid',
         'User-Agent': ua,
         'Content-Type': 'application/x-protobuf',
-        'Host': apiUrl,
+        'Host': messageHost,
         'Cookie': this.buildCookieString(cookies),
         'Accept': 'application/x-protobuf'
       };

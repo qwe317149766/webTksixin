@@ -3,6 +3,7 @@ require('dotenv').config();
 const projectConfig = require('../../../config');
 
 const DEFAULT_TIKTOK_API_BASE_URL = 'https://api16-normal-useast5.tiktokv.us';
+const DEFAULT_TIKTOK_API_GLOBAL_BASE_URL = 'https://api22-normal-c-alisg.tiktokv.com';
 const DEFAULT_TIKTOK_SDK_BASE_URL = 'https://mssdk16-normal-useast5.tiktokv.us';
 
 class Settings {
@@ -48,6 +49,15 @@ class Settings {
       process.env.TIKTOK_API_BASE_URL ||
       projectConfig.tiktok?.apiBaseUrl ||
       DEFAULT_TIKTOK_API_BASE_URL
+    );
+  }
+
+  static get TIKTOK_API_GLOBAL_BASE_URL() {
+    console.log('TIKTOK_API_GLOBAL_BASE_URL:',DEFAULT_TIKTOK_API_GLOBAL_BASE_URL)
+    return (
+      process.env.TIKTOK_API_GLOBAL_BASE_URL ||
+      projectConfig.tiktok?.apiGlobalBaseUrl ||
+      DEFAULT_TIKTOK_API_GLOBAL_BASE_URL
     );
   }
 
