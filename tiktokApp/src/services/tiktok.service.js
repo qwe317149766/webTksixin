@@ -1052,7 +1052,6 @@ class TikTokService {
         'User-Agent': ua,
         'Content-Type': 'application/x-protobuf',
         'Host': 'api16-normal-useast5.tiktokv.us',
-        'Connection': 'close',
         'Cookie': this.buildCookieString(cookies),
         'Accept': 'application/x-protobuf'
       };

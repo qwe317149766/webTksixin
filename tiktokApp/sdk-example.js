@@ -17,7 +17,7 @@ async function example() {
   // 示例 1: 发送简单文本消息（会自动创建会话）
   try {
     const result1 = await sdk.sendMessage({
-      receiverId: '9876543215', // 接收者用户ID
+      receiverId: '9876543216', // 接收者用户ID
       messageData: 'Hello, this is a test message!', // 消息文本
       cookieData: cookieData, // Cookie 数据
       proxyConfig: null, // 代理配置（可选）
