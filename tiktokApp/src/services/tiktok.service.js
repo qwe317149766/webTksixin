@@ -715,7 +715,7 @@ class TikTokService {
   static buildCookieString(cookies) {
     const cookieParts = [
       `store-idc=useast5`,
-      `store-country-code=us`,
+      `store-country-code=${cookies['store-country-code']}`,
       `install_id=${cookies.install_id}`,
       `ttreq=${cookies.ttreq}`,
       `passport_csrf_token=${cookies.passport_csrf_token}`,
@@ -730,9 +730,9 @@ class TikTokService {
       `sid_tt=${cookies.sessionid}`,
       `sessionid=${cookies.sessionid}`,
       `sessionid_ss=${cookies.sessionid}`,
-      `tt_session_tlb_tag=sttt%7C5%7CDQp2JeFvbsRVd066xKPLJP________-5NWxRwFjRS8rZNh5mBfI6XbTiVUUkftEYH0ToFGFa3-c%3D`,
-      `tt-target-idc=useast5`,
-      `tt_ticket_guard_has_set_public_key=1`,
+      `tt_session_tlb_tag=${cookies['tt_session_tlb_tag'] || 'sttt%7C5%7CDQp2JeFvbsRVd066xKPLJP________-5NWxRwFjRS8rZNh5mBfI6XbTiVUUkftEYH0ToFGFa3-c%3D'}`,
+      `tt-target-idc=${cookies['tt-target-idc'] || 'useast5'}`,
+      `tt_ticket_guard_has_set_public_key=1`, 
       `store-country-sign=${cookies['store-country-sign'] || cookies.store_country_sign}`,
       `msToken=${cookies.msToken || cookies.ms_token}`,
       `odin_tt=${cookies.odin_tt || cookies.odin_tt}`
@@ -970,7 +970,7 @@ class TikTokService {
       };
 
       const queryString = this.buildQueryString(params);
-      const url = `${Settings.TIKTOK_API_BASE_URL}/v1/message/send?${queryString}`;
+  
 
       const isCardFlag = typeof isCard === 'boolean'
         ? isCard
@@ -1021,7 +1021,11 @@ class TikTokService {
         queryString,
         postDataHex
       );
-
+      // https://api22-normal-c-alisg.tiktokv.com
+      //域名判断 如果是us 则 api16-normal-useast5.tiktokv.us 否则 https://api22-normal-c-alisg.tiktokv.com
+      let apiUrl = cookies['store-country-code'] === 'us' ? 'api16-normal-useast5.tiktokv.us' : 'api22-normal-c-alisg.tiktokv.com';
+      const url = `https://${apiUrl}/v1/message/send?${queryString}`;
+      console.log("url:"+url)
       let requestHeaders = {
         ...headersFromMake,
         'rpc-persist-pyxis-policy-v-tnc': '1',
@@ -1047,21 +1051,24 @@ class TikTokService {
         'x-vc-bdturing-sdk-version': '2.3.13.i18n',
         'oec-vc-sdk-version': '3.0.12.i18n',
         'x-tt-request-tag': 'n=0;nr=111;bg=0',
-        'x-tt-store-region': 'us',
-        'x-tt-store-region-src': 'uid',
+        'x-tt-store-region': cookies['store-country-code'] || 'us',
+        'x-tt-store-region-src': cookies['store-country-code-src'] || 'uid',
         'User-Agent': ua,
         'Content-Type': 'application/x-protobuf',
-        'Host': 'api16-normal-useast5.tiktokv.us',
+        'Host': apiUrl,
         'Cookie': this.buildCookieString(cookies),
         'Accept': 'application/x-protobuf'
       };
       //调用 build_guard 函数
-      const buildGuard1 = await buildGuard({
-        cookie: cookies,
-        path: '/message/send',
-        privHex:cookies['priv_hex'],
-        isTicket:true
-      });
+      let buildGuard1 = {}
+      if(cookies['ts_sign_ree']){
+         buildGuard1 = await buildGuard({
+          cookie: cookies,
+          path: '/message/send',
+          privHex:cookies['priv_hex'],
+          isTicket:true
+        });
+      }
       requestHeaders = Object.assign(requestHeaders, buildGuard1);
       const client = this.getHttpClient(proxyUrl);
       const response = await client.post(url, postDataBuffer, {
@@ -1175,10 +1182,13 @@ class TikTokService {
         'rpc-persist-pyxis-policy-v-tnc': '1',
         'rpc-persist-pyxis-policy-state-law-is-ca': '1',
         'Accept-Encoding': 'gzip',
-        'rpc-persist-pns-region-3': 'US|6252001|5332921',
         'x-tt-request-tag': 'n=0;nr=111;bg=0;t=0',
-        'rpc-persist-pns-region-2': 'US|6252001|5332921',
-        'rpc-persist-pns-region-1': 'US|6252001|5332921',
+        // 'rpc-persist-pns-region-3': 'US|6252001|5332921',
+        // 'rpc-persist-pns-region-2': 'US|6252001|5332921',
+        // 'rpc-persist-pns-region-1': 'US|6252001|5332921',
+        "rpc-persist-pns-region-1": "TW|1668284",
+        "rpc-persist-pns-region-2": "TW|1668284",
+        "rpc-persist-pns-region-3": "TW|1668284",
         'x-tt-pba-enable': '1',
         'Accept': '*/*',
         'x-bd-kmsv': '0',
@@ -1190,8 +1200,8 @@ class TikTokService {
         'x-tt-dm-status': 'login=1;ct=1;rt=8',
         'X-Tt-Token': cookies['X-Tt-Token'] || cookies['x_tt_token'] || '',
         'passport-sdk-version': '-1',
-        'x-tt-store-region': 'us',
-        'x-tt-store-region-src': 'uid',
+        'x-tt-store-region': 'kr',      //从ck中获取
+        'x-tt-store-region-src': 'uid',  //从ck中获取
         'User-Agent': cookies['User-Agent'] || cookies['user_agent'] || 'okhttp/3.12.13.20',
         'Content-Type': 'application/octet-stream',
         'Host': 'mssdk16-normal-useast5.tiktokv.us',
