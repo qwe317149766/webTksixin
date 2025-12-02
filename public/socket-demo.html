@@ -205,6 +205,11 @@
                 <label for="serverUrl">服务器地址</label>
                 <input type="text" id="serverUrl" value="http://localhost:3000" placeholder="http://localhost:3000">
             </div>
+
+            <div class="form-group">
+                <label for="socketPath">Socket Path（可选）</label>
+                <input type="text" id="socketPath" value="/socket.io" placeholder="/socket.io">
+            </div>
             
             <div class="form-group">
                 <label for="token">Token（必填）</label>
@@ -257,6 +262,7 @@
         const serverUrlInput = document.getElementById('serverUrl');
         const tokenInput = document.getElementById('token');
         const taskIdInput = document.getElementById('taskId');
+        const socketPathInput = document.getElementById('socketPath');
         const connectBtn = document.getElementById('connectBtn');
         const disconnectBtn = document.getElementById('disconnectBtn');
         const startTaskBtn = document.getElementById('startTaskBtn');
@@ -287,10 +293,46 @@
             statusDiv.textContent = message;
         }
 
+        const STORAGE_KEY = 'socketDemoConfig';
+
+        function saveConfig() {
+            const serverUrl = serverUrlInput.value.trim();
+            const token = tokenInput.value.trim();
+            const taskId = taskIdInput.value.trim();
+            const socketPath = (socketPathInput.value || '').trim();
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify({
+                    serverUrl,
+                    token,
+                    taskId,
+                    socketPath
+                }));
+            } catch (error) {
+                console.warn('保存配置失败:', error.message);
+            }
+        }
+
+        function loadConfigFromStorage() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (!raw) return;
+                const config = JSON.parse(raw);
+                if (config.serverUrl) serverUrlInput.value = config.serverUrl;
+                if (config.token) tokenInput.value = config.token;
+                if (config.taskId) taskIdInput.value = config.taskId;
+                if (config.socketPath) socketPathInput.value = config.socketPath;
+            } catch (error) {
+                console.warn('读取配置失败:', error.message);
+            }
+        }
+
+        loadConfigFromStorage();
+
         function connectSocket() {
             const serverUrl = serverUrlInput.value.trim();
             const token = tokenInput.value.trim();
             const taskId = taskIdInput.value.trim();
+            const socketPath = (socketPathInput.value || '').trim();
 
             if (!serverUrl) {
                 alert('请输入服务器地址');
@@ -312,6 +354,7 @@
                 return;
             }
 
+            saveConfig();
             addLog(`正在连接到 ${serverUrl}... (Task ID: ${taskId})`, 'info');
             updateStatus('connecting', '连接中...');
             connectBtn.disabled = true;
@@ -328,6 +371,7 @@
                 //     taskId: taskId
                 // },
                 transports: ['websocket', 'polling'],
+                path: socketPath || '/socket.io',
                 reconnection: true,
                 reconnectionDelay: 1000,
                 reconnectionDelayMax: 5000,

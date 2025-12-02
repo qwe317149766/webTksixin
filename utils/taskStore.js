@@ -154,7 +154,7 @@ class TaskStore {
     if (existing) {
       return existing;
     }
-    return this.setTaskStatus(taskId, 'idle', { userId: userId || '' });
+    return this.setTaskStatus(taskId, 'stopped', { userId: userId || '' });
   }
 
   async getTaskCount(taskId) {
