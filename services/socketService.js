@@ -2,13 +2,13 @@ const { Server } = require('socket.io');
 const config = require('../config');
 const { verifyToken } = require('./authService');
 const TaskStore = require('../utils/taskStore');
-const QuotaService = require('./quotaService');
 const BatchRequester = require('../utils/BatchRequester');
 const { sendText } = require('../tiktokWeb/TiktokApi');
 const mysqlPool = require('../config/database');
   // 从 Redis 获取任务信息（如果 batchInfo 中没有完整信息）
 const redis = require('../config/redis');
 const BATCH_SIZE = config.task?.batchSize || 10;
+const MAX_TASK_RETRY = config.task?.maxRetries || 3;
 const TASK_TOTAL_PREFIX = 'task:total';
 const TASK_PROGRESS_PREFIX = 'task:progress';
 
@@ -27,27 +27,14 @@ function getTaskProgressKey(taskId) {
 }
 
 async function getTaskTotals(taskId) {
-  const taskInfoStr = await redis.get(`task:${taskId}`);
-  if (taskInfoStr) {
-    try {
-      taskInfo = JSON.parse(taskInfoStr);
-    } catch (e) {
-      console.warn(`[Task] 解析任务信息失败 (taskId=${taskId}):`, e.message);
-    }
-  }
-  const remainingStr = await redis.get(getTaskTotalKey(taskId));
-  const remaining = Number(remainingStr || 0); 
-  const progress = await redis.hgetall(getTaskProgressKey(taskId));
-  const success = taskInfo.total - remaining;
-  const fail = progress.fail || 0; //目前是0
+  const stats = await TaskStore.getTaskStats(taskId);
+  const total = stats.total;
+  const remaining = stats.remaining;
+  const success = stats.success;
+  const fail = stats.fail;
   const completed = success + fail;
-  const percent = Math.min(100, Math.round((success / taskInfo.total) * 100));
-  return { total: taskInfo.total, success, fail, completed, remaining, percent };
-}
-
-async function incrementTaskProgress(taskId, field, amount = 1) {
-  if (!taskId || !field) return 0;
-  return redis.hincrby(getTaskProgressKey(taskId), field, amount);
+  const percent = total > 0 ? Math.min(100, Math.round((success / total) * 100)) : 0;
+  return { total, success, fail, completed, remaining, percent };
 }
 
 async function emitTaskProgress(socketManager, uid, taskId) {
@@ -117,6 +104,7 @@ const batchRequesterDoneFlags = new Map(); // key: `${userId}:${taskId}` -> bool
 
 // 跟踪每个任务的执行次数
 const taskExecutionCounts = new Map(); // key: `${userId}:${taskId}` -> { total: number, success: number, fail: number }
+const taskRetryCounts = new Map(); // key: `${taskId}:${uid}` -> retryCount
 
 // 跟踪每个 cookieId 的连续 -10001 错误次数
 const cookieError10001Counts = new Map(); // key: `${cookieId}` -> number
@@ -126,6 +114,10 @@ const globalTaskProcessors = new Map(); // key: `${userId}:${taskId}` -> trigger
 
 function getTaskRequesterKey(userId, taskId) {
   return `${userId}:${taskId}`;
+}
+
+function getRetryKey(taskId, uid) {
+  return `${taskId}:${uid}`;
 }
 
 async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMore, statusUpdater) {
@@ -182,24 +174,17 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
     const tableName = 'uni_cookies_1';
     let dbConnection = null;
     let {task} = result.data;
+    triggerTaskProcessing(task.userId, task.taskId, config.task?.concurrency || 1);
     const taskIdFromResult = task.taskId;
     console.log('taskIdFromResult:',taskIdFromResult)
     try {
       dbConnection = await mysqlPool.getConnection();
       if (result.code === 0) {
-        // 成功：待私信总数 -1，更新使用次数，进度 +1
-        let pendingResult = await QuotaService.decreaseTaskPendingCount({
-          uid: result.uid,
-          taskId: taskIdFromResult,
-          amount: 1,
-        });
-        console.log('执行扣减!')
-        console.log('taskIdFromResult:',pendingResult)
-        //如果条数扣减失败直接停止队列任务，发送到前端 任务已完成,停止队列任务
-        if (!pendingResult.success) {
-          console.log('任务已完成')
+        taskRetryCounts.delete(getRetryKey(task.taskId, task.uid));
+        const markResult = await TaskStore.markTaskSuccess(taskIdFromResult);
+        if (!markResult.success) {
+          console.log(`[Task] 任务 ${taskIdFromResult} 剩余数量已为 0，标记为完成`);
           batchRequester.stop();
-          //更新队列的运行状态
           await statusUpdater('idle', '任务队列已处理完成');
           return;
         }
@@ -218,7 +203,6 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           );
         }
 
-        await incrementTaskProgress(taskIdFromResult, 'success', 1);
         await emitTaskProgress(socketManager, result.uid, taskIdFromResult);
         
         // 更新任务执行次数统计（成功）
@@ -249,8 +233,9 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
         const cookieId = data.cookieId || result.cookieId;
         console.log('cookieId:',cookieId,data.code)
         // 不同错误码更新 Cookie 状态
-        let needRetry = false;
+        let shouldRequeue = false;
         let tongJs = true
+        let recordFail = true;
         console.log("[data.code]:",data.code)
         
         // 如果不是 -10001 错误，重置该 cookieId 的连续错误计数
@@ -279,14 +264,14 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
               );
               // 清除计数器
               cookieError10001Counts.delete(cookieId);
-              needRetry = true;
+              shouldRequeue = true;
             } else {
               // 未达到3次，继续重试
-              needRetry = true;
+              shouldRequeue = true;
             }
           } else {
             // 没有 cookieId，直接重试
-            needRetry = true;
+            shouldRequeue = true;
           }
         } else if (data.code === -10000) {
           console.log(
@@ -298,7 +283,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
             `UPDATE ${tableName} SET status = 5 WHERE id = ?`,
             [cookieId]
           );
-          needRetry = true;
+          shouldRequeue = true;
         } else if (data.code === -1) {
           console.log(
             `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 退出状态: ${JSON.stringify(
@@ -309,7 +294,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
             `UPDATE ${tableName} SET status = 3 WHERE id = ?`,
             [cookieId]
           );
-          needRetry = true;
+          shouldRequeue = true;
         } else if (data.code === 10004) {
           console.log(
             `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 发送端被限制: ${JSON.stringify(
@@ -320,7 +305,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
             `UPDATE ${tableName} SET status = 2 WHERE id = ?`,
             [cookieId]
           );
-          needRetry = true;
+          shouldRequeue = true;
         } else if (data.code === 10002) {
           console.log(
             `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 发送太快: ${JSON.stringify(
@@ -331,7 +316,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
             `UPDATE ${tableName} SET status = 6 WHERE id = ?`,
             [cookieId]
           );
-          needRetry = true;
+          shouldRequeue = true;
         } else if (data.code === -10002) {
           console.log(
             `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 网络异常: ${JSON.stringify(
@@ -339,14 +324,14 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
             )}`
           );
           tongJs = false
-          needRetry = true;
+          shouldRequeue = true;
         } else {
           console.error(
             `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 发送失败: ${JSON.stringify(
               data.data
             )}`
           );
-          needRetry = true;
+          shouldRequeue = true;
         }
         // 任务失败，从 uidCookieMap 中删除映射，允许重新分配
         const receiverUid = result.uid || task.uid;
@@ -359,16 +344,36 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           }
         }
         
-        if (needRetry) {
-          console.log('重新添加队列',task)
-          const queueKey = TaskStore.getQueueKey(task.userId, task.taskId)
-          console.log('queueKey:',queueKey)
-          const retryResult = await redis.zadd(queueKey, Date.now(), JSON.stringify(task));
-          console.log("retryResult:",retryResult)
+        const retryKey = getRetryKey(task.taskId, task.uid);
+        if (shouldRequeue) {
+          const attempts = (taskRetryCounts.get(retryKey) || 0) + 1;
+          if (attempts > MAX_TASK_RETRY) {
+            console.warn(`[Task] 任务 ${task.taskId} -> ${task.uid} 超过最大重试次数 ${MAX_TASK_RETRY}，不再重试`);
+            taskRetryCounts.delete(retryKey);
+            shouldRequeue = false;
+            recordFail = true
+          } else {
+            taskRetryCounts.set(retryKey, attempts);
+            console.log(`[Task] 任务 ${task.taskId} -> ${task.uid} 第 ${attempts} 次重试，重新入队`);
+            const queueKey = TaskStore.getQueueKey(task.userId, task.taskId);
+            await redis.zadd(queueKey, Date.now(), JSON.stringify(task));
+            recordFail = false;
+          }
+        } else {
+          taskRetryCounts.delete(retryKey);
         }
-        if (tongJs) {
-          await incrementTaskProgress(task.taskId, 'fail', 1);
-          await emitTaskProgress(socketManager, task.userId, taskIdFromResult);
+        console.log('recordFail:',recordFail)
+        console.log('tongJs:',tongJs)
+          if (recordFail && tongJs) {
+            const failResult = await TaskStore.markTaskFail(task.taskId);
+            console.log('failResult:',failResult)
+            if (!failResult.success) {
+              console.log(`[Task] 任务 ${task.taskId} 剩余数量已为 0，标记为完成`);
+              batchRequester.stop();
+              await statusUpdater('idle', '任务队列已处理完成');
+            } else {
+              await emitTaskProgress(socketManager, task.userId, taskIdFromResult);
+            }
         }
         
         // 更新任务执行次数统计（失败）
@@ -727,64 +732,86 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
 
 function createTaskProcessor(socketManager, userId, taskId, statusChecker, statusUpdater) {
   let isProcessing = false;
-  let shouldContinue = false;
+  let pendingDemand = 0;
 
-  const triggerProcessing = async () => {
-    if (!socketManager.hasConnections(userId)) {
-      return;
+  const triggerProcessing = async (demand = 1) => {
+    const normalizedDemand = Number.isFinite(demand) && demand > 0 ? Math.floor(demand) : 0;
+    if (normalizedDemand > 0) {
+      pendingDemand += normalizedDemand;
+    } else if (pendingDemand === 0) {
+      pendingDemand = 1;
     }
 
-    // 检查任务状态，如果已停止则不继续处理
+    if (!socketManager.hasConnections(userId)) {
+      return false;
+    }
+
     if (statusChecker && !statusChecker()) {
-      console.log(`[Task] 用户 ${userId} 任务 ${taskId} 已停止，不再处理`);
-      return;
+      return false;
     }
 
     if (isProcessing) {
-      shouldContinue = true;
-      return;
+      return true;
     }
 
     isProcessing = true;
-    shouldContinue = false;
-
     try {
-      // 根据 taskId 过滤任务
-      const tasks = await TaskStore.dequeueTask(userId, taskId, BATCH_SIZE);
-      if (tasks && tasks.length > 0) {
-        await processBatchTasks(socketManager, tasks, taskId, (neededLength) => {
-          // 再次检查状态，如果已停止则不继续
-          if (statusChecker && !statusChecker()) {
-            console.log(`[Task] 用户 ${userId} 任务 ${taskId} 已停止，停止后续处理`);
-            return;
-          }
-          // neededLength 表示需要加载的任务数量
-          console.log(`[Task] 用户 ${userId} 任务 ${taskId} 需要加载 ${neededLength} 个任务`);
-          shouldContinue = true;
-          const emitted = socketManager.emitToUid(userId, 'task:needMore', {
-            taskId,
-            need: neededLength,
-          });
-          if (!emitted) {
-            console.log(`[Task] 用户 ${userId} 当前无 socket 连接，needMore 事件仅记录`);
-          }
-        }, statusUpdater);
-      } else {
-        console.log(`[Task] 用户 ${userId} 任务 ${taskId} 队列为空，等待新的触发`);
-        const hasPending = await TaskStore.hasPendingTasks(taskId);
-        if (!hasPending && typeof statusUpdater === 'function') {
-          await statusUpdater('idle', '任务队列已处理完成');
+      while (pendingDemand > 0) {
+        if (!socketManager.hasConnections(userId)) {
+          break;
         }
+        if (statusChecker && !statusChecker()) {
+          console.log(`[Task] 用户 ${userId} 任务 ${taskId} 已停止，不再处理`);
+          break;
+        }
+
+        const batchSize = Math.min(BATCH_SIZE, pendingDemand);
+        const tasks = await TaskStore.dequeueTask(userId, taskId, batchSize);
+
+        if (!tasks || tasks.length === 0) {
+          console.log(`[Task] 用户 ${userId} 任务 ${taskId} 队列为空，等待新的触发`);
+          const hasPending = await TaskStore.hasPendingTasks(taskId);
+          if (!hasPending && typeof statusUpdater === 'function') {
+            await statusUpdater('idle', '任务队列已处理完成');
+          }
+          break;
+        }
+
+        pendingDemand = Math.max(0, pendingDemand - tasks.length);
+
+        await processBatchTasks(
+          socketManager,
+          tasks,
+          taskId,
+          (neededLength) => {
+            if (statusChecker && !statusChecker()) {
+              return;
+            }
+            const need = Number.isFinite(neededLength) && neededLength > 0
+              ? Math.floor(neededLength)
+              : 0;
+            if (need > 0) {
+              pendingDemand += need;
+              const emitted = socketManager.emitToUid(userId, 'task:needMore', {
+                taskId,
+                need,
+              });
+              if (!emitted) {
+                console.log(`[Task] 用户 ${userId} 当前无 socket 连接，needMore 事件仅记录`);
+              }
+            }
+          },
+          statusUpdater
+        );
       }
     } catch (error) {
       console.error(`任务轮询失败 (uid=${userId}, taskId=${taskId}):`, error);
     } finally {
       isProcessing = false;
-      if (shouldContinue && (!statusChecker || statusChecker())) {
-        shouldContinue = false;
-        setImmediate(triggerProcessing);
-      }
+      pendingDemand = Math.max(0, pendingDemand);
     }
+
+    return true;
   };
 
   return triggerProcessing;
@@ -1023,13 +1050,15 @@ function initSocketServer(httpServer) {
  * @param {string} taskId - 任务 ID
  * @returns {boolean} - 是否成功触发
  */
-function triggerTaskProcessing(userId, taskId) {
+function triggerTaskProcessing(userId, taskId, demand = 1) {
   const taskKey = `${userId}:${taskId}`;
   const triggerFn = globalTaskProcessors.get(taskKey);
   
   if (triggerFn) {
-    console.log(`[Task] 外部触发任务处理: 用户 ${userId}, 任务 ${taskId}`);
-    triggerFn();
+    console.log(`[Task] 外部触发任务处理: 用户 ${userId}, 任务 ${taskId}, 数量 ${demand}`);
+    triggerFn(demand).catch(error => {
+      console.error(`[Task] 触发任务处理失败 (taskId=${taskId}):`, error);
+    });
     return true;
   } else {
     console.log(`[Task] 未找到任务处理器: 用户 ${userId}, 任务 ${taskId}`);

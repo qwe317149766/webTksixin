@@ -639,8 +639,8 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
 
     const { beforeScore, afterScore, frozenScore, billId } = deductResult.data;
     
-    //任务总数写入到redis中
-    await redis.set(`task:total:${taskId}`, normalizedTotal);
+    // 初始化任务计数
+    await TaskStore.initTaskCounters(taskId, normalizedTotal);
      
     //将提交的信息缓存到redis 
     await redis.setex(`task:${taskId}`, 86400, JSON.stringify({
@@ -743,14 +743,15 @@ app.post('/api/v1/tk-task/enqueue', async (req, res) => {
     try {
       const queueSize = await TaskStore.size(user.uid, taskId);
       const concurrency = config.task?.concurrency || 10;
-      if (queueSize > 0 && queueSize <= concurrency) {
-        const triggered = triggerTaskProcessing(user.uid, taskId);
+      if (queueSize > 0) {
+        const demand = Math.min(queueSize, concurrency);
+        const triggered = triggerTaskProcessing(user.uid, taskId, demand);
         if (!triggered) {
           console.warn(`[API] 任务 ${taskId} 处理器未找到，可能需要先建立 Socket 连接`);
         }
       } else {
         console.log(`[API] 任务 ${taskId} 队列数量 ${queueSize}，无需触发`);
-        }
+      }
     } catch (error) {
       console.error(`[API] 触发任务处理失败:`, error);
       // 不阻止接口返回，只记录错误

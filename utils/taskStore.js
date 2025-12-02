@@ -1,5 +1,31 @@
 const redis = require('../config/redis');
 
+const LUA_MARK_SUCCESS = `
+local totalKey = KEYS[1]
+local successKey = KEYS[2]
+local remaining = tonumber(redis.call('GET', totalKey) or '0')
+if remaining <= 0 then
+  return {0, remaining}
+end
+remaining = remaining - 1
+redis.call('SET', totalKey, remaining)
+redis.call('INCR', successKey)
+return {1, remaining}
+`;
+
+const LUA_MARK_FAIL = `
+local totalKey = KEYS[1]
+local failKey = KEYS[2]
+local remaining = tonumber(redis.call('GET', totalKey) or '0')
+if remaining <= 0 then
+  return {0, remaining}
+end
+remaining = remaining - 1
+redis.call('SET', totalKey, remaining)
+redis.call('INCR', failKey)
+return {1, remaining}
+`;
+
 /**
  * 基于 Redis Sorted Set 的任务队列
  */
@@ -8,6 +34,9 @@ class TaskStore {
     this.queueKeyPrefix = 'tasks:zqueue';
     this.taskStatusPrefix = 'tasks:status';
     this.taskCountPrefix = 'task:total';
+    this.taskPendingPrefix = 'task:pending';
+    this.taskSuccessPrefix = 'task:success';
+    this.taskFailPrefix = 'task:fail';
   }
 
   getQueueKey(userId, taskId) {
@@ -36,6 +65,12 @@ class TaskStore {
     return `tasks:batch:${batchNo}:info`;
   }
 
+  async cleanupBatchInfo(batchNo) {
+    if (!batchNo) return;
+    await redis.del(this.getBatchInfoKey(batchNo));
+    await redis.del(this.getBatchUidKey(batchNo));
+  }
+
   getTaskStatusKey(taskId) {
     if (!taskId) {
       throw new Error('taskId 不能为空');
@@ -48,6 +83,38 @@ class TaskStore {
       throw new Error('taskId 不能为空');
     }
     return `${this.taskCountPrefix}:${taskId}`;
+  }
+  getTaskPendingKey(taskId) {
+    if (!taskId) {
+      throw new Error('taskId 不能为空');
+    }
+    return `${this.taskPendingPrefix}:${taskId}`;
+  }
+
+  getTaskSuccessKey(taskId) {
+    if (!taskId) {
+      throw new Error('taskId 不能为空');
+    }
+    return `${this.taskSuccessPrefix}:${taskId}`;
+  }
+
+  getTaskFailKey(taskId) {
+    if (!taskId) {
+      throw new Error('taskId 不能为空');
+    }
+    return `${this.taskFailPrefix}:${taskId}`;
+  }
+
+  async initTaskCounters(taskId, total) {
+    if (!taskId) throw new Error('taskId 不能为空');
+    const normalizedTotal = Number(total) || 0;
+    await redis
+      .multi()
+      .set(this.getTaskPendingKey(taskId), normalizedTotal)
+      .set(this.getTaskCountKey(taskId), normalizedTotal)
+      .set(this.getTaskSuccessKey(taskId), 0)
+      .set(this.getTaskFailKey(taskId), 0)
+      .exec();
   }
 
   async getTaskStatus(taskId) {
@@ -90,19 +157,6 @@ class TaskStore {
     return this.setTaskStatus(taskId, 'idle', { userId: userId || '' });
   }
 
-  async incrementTaskCount(taskId, delta) {
-    if (!taskId || !delta) {
-      return null;
-    }
-    const key = this.getTaskCountKey(taskId);
-    const value = await redis.incrby(key, delta);
-    if (value < 0) {
-      await redis.set(key, 0);
-      return 0;
-    }
-    return value;
-  }
-
   async getTaskCount(taskId) {
     if (!taskId) return 0;
     const key = this.getTaskCountKey(taskId);
@@ -114,6 +168,61 @@ class TaskStore {
     const count = await this.getTaskCount(taskId);
     console.log(`[TaskStore] 任务 ${taskId} 存在任务条数: ${count}`);
     return count > 0;
+  }
+
+  async markTaskSuccess(taskId) {
+    if (!taskId) return { success: false, remaining: 0 };
+    const result = await redis.eval(
+      LUA_MARK_SUCCESS,
+      2,
+      this.getTaskCountKey(taskId),
+      this.getTaskSuccessKey(taskId)
+    );
+    if (!Array.isArray(result) || result.length < 2) {
+      return { success: false, remaining: 0 };
+    }
+    const status = Number(result[0]);
+    const remaining = Number(result[1]);
+    return { success: status === 1, remaining };
+  }
+
+  async markTaskFail(taskId) {
+    if (!taskId) return { success: false, remaining: 0 };
+    const result = await redis.eval(
+      LUA_MARK_FAIL,
+      2,
+      this.getTaskCountKey(taskId),
+      this.getTaskFailKey(taskId)
+    );
+    if (!Array.isArray(result) || result.length < 2) {
+      return { success: false, remaining: 0 };
+    }
+    const status = Number(result[0]);
+    const remaining = Number(result[1]);
+    return { success: status === 1, remaining };
+  }
+
+  async getTaskStats(taskId) {
+    if (!taskId) {
+      return {
+        total: 0,
+        remaining: 0,
+        success: 0,
+        fail: 0,
+      };
+    }
+    const [pending, remaining, success, fail] = await redis.mget(
+      this.getTaskPendingKey(taskId),
+      this.getTaskCountKey(taskId),
+      this.getTaskSuccessKey(taskId),
+      this.getTaskFailKey(taskId)
+    );
+    return {
+      total: Number(pending || 0),
+      remaining: Number(remaining || 0),
+      success: Number(success || 0),
+      fail: Number(fail || 0),
+    };
   }
 
   async getBatchInfo(batchNo) {
@@ -294,9 +403,6 @@ class TaskStore {
       }
     }
 
-    if (newTasks.length) {
-      await this.incrementTaskCount(taskId, newTasks.length);
-    }
 
     return {
       isNewBatch: existingSet.size === 0,
@@ -423,16 +529,15 @@ class TaskStore {
     }
 
     // 批量从 Set 中移除 UID
-    const batchUidRemovals = [];
     for (const task of tasks) {
       if (task.batchNo && task.uid) {
-        batchUidRemovals.push(
-          redis.srem(this.getBatchUidKey(task.batchNo), task.uid)
-        );
+        const batchKey = this.getBatchUidKey(task.batchNo);
+        await redis.srem(batchKey, task.uid);
+        const remaining = await redis.scard(batchKey);
+        if (remaining === 0) {
+          await this.cleanupBatchInfo(task.batchNo);
+        }
       }
-    }
-    if (batchUidRemovals.length > 0) {
-      await Promise.all(batchUidRemovals);
     }
 
     // 根据 taskId 减少任务计数（按 taskId 进行计算）

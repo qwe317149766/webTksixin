@@ -8,27 +8,6 @@ const QUOTA_KEY = 'user:score';
 const QUOTA_CONFIG_KEY = 'pay:config';
 const QUOTA_TABLE = 'uni_system_admin'; // 用户表名，可根据实际情况修改
 const QUOTA_COLUMN = 'score_num'; // 余额字段名，可根据实际情况修改
-const TASK_PENDING_PREFIX = 'task:total';
-function getTaskPendingKey(taskId) {
-  if (!taskId) {
-    throw new Error('taskId 不能为空');
-  }
-  return `${TASK_PENDING_PREFIX}:${taskId}`;
-}
-const LUA_DECR_PENDING = `
-local key = KEYS[1]
-local field = ARGV[1]
-local amount = tonumber(ARGV[2])
-local current = tonumber(redis.call('hget', key, field) or '0')
-if current <= 0 then
-  return {0, current}
-end
-if current < amount then
-  return {-1, current}
-end
-local newValue = redis.call('hincrby', key, field, -amount)
-return {1, newValue}
-`;
 
 /**
  * 从 Redis 获取余额
@@ -437,61 +416,6 @@ async function deductFreezeAndCreateBill(params) {
   }
 }
 
-/**
- * 原子性扣减任务待发送数量（按 taskId + uid）
- * @param {Object} params
- * @param {string|number} params.uid
- * @param {string} params.taskId
- * @param {number} [params.amount=1]
- * @returns {Promise<{success: boolean, remaining?: number, message?: string}>}
- */
-async function decreaseTaskPendingCount(params = {}) {
-  const { uid, taskId, amount = 1 } = params;
-
-  if (!uid || !taskId) {
-    return { success: false, message: 'uid 与 taskId 均不能为空' };
-  }
-
-  if (amount <= 0) {
-    return { success: false, message: 'amount 必须大于 0' };
-  }
-
-  const key = getTaskPendingKey(taskId);
-
-  try {
-    const result = await redis.eval(
-      LUA_DECR_PENDING,
-      1,
-      key,
-      String(uid),
-      String(amount)
-    );
-
-    if (!Array.isArray(result) || result.length < 2) {
-      return { success: false, message: '扣减失败：返回值异常' };
-    }
-
-    const status = Number(result[0]);
-    const remaining = Number(result[1]);
-
-    if (status === 1) {
-      return { success: true, remaining };
-    }
-
-    if (status === -1) {
-      return { success: false, remaining, message: '待发送数量不足' };
-    }
-
-    return { success: false, remaining, message: '尚未记录待发送数量' };
-  } catch (error) {
-    console.error(
-      `[Quota] 扣减任务待发送数量失败 (UID: ${uid}, TaskID: ${taskId}):`,
-      error.message
-    );
-    return { success: false, message: `扣减失败: ${error.message}` };
-  }
-}
-
 module.exports = {
   getQuota,
   ensureQuotaRecord,
@@ -499,6 +423,5 @@ module.exports = {
   addQuota,
   getPayConfigFromDB,
   deductFreezeAndCreateBill, // 扣减、冻结并生成账单（组合操作）
-  decreaseTaskPendingCount,
 };
 
