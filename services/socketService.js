@@ -572,10 +572,10 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
           await redis.zadd(queueKey, Date.now(), entry);
         }
         console.log(`[Task] 已将 ${tasks.length} 个任务重新放回队列，等待重新处理`);
-        // 触发 onNeedMore 回调，让上层重新获取任务
-        if (typeof onNeedMore === 'function') {
-          onNeedMore(tasks.length);
-        }
+        // // 触发 onNeedMore 回调，让上层重新获取任务
+        // if (typeof onNeedMore === 'function') {
+        //   onNeedMore(tasks.length);
+        // }
       }
       return;
     }
