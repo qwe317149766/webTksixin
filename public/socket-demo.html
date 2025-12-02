@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Socket.IO 连接 Demo</title>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.connecting {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .log-container {
+            margin-top: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .log-container h3 {
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .log {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        .log-item {
+            padding: 8px;
+            margin-bottom: 5px;
+            border-left: 3px solid #667eea;
+            background: white;
+            border-radius: 4px;
+        }
+
+        .log-item.error {
+            border-left-color: #dc3545;
+            background: #fff5f5;
+        }
+
+        .log-item.success {
+            border-left-color: #28a745;
+            background: #f0fff4;
+        }
+
+        .log-item.info {
+            border-left-color: #17a2b8;
+            background: #f0f9ff;
+        }
+
+        .log-time {
+            color: #666;
+            font-size: 11px;
+            margin-right: 8px;
+        }
+
+        .clear-btn {
+            margin-top: 10px;
+            padding: 8px 16px;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .clear-btn:hover {
+            background: #5a6268;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔌 Socket.IO 连接 Demo</h1>
+            <p>连接到 TikTok Web API Socket.IO 服务器</p>
+        </div>
+        
+        <div class="content">
+            <div class="form-group">
+                <label for="serverUrl">服务器地址</label>
+                <input type="text" id="serverUrl" value="http://localhost:3000" placeholder="http://localhost:3000">
+            </div>
+            
+            <div class="form-group">
+                <label for="token">Token（必填）</label>
+                <input type="text" id="token" placeholder="请输入你的认证 token">
+            </div>
+            
+            <div class="form-group">
+                <label for="taskId">Task ID（必填）</label>
+                <input type="text" id="taskId" placeholder="请输入任务 ID (taskId)">
+            </div>
+            
+            <button class="btn" id="connectBtn" onclick="connectSocket()">连接</button>
+            <button class="btn" id="disconnectBtn" onclick="disconnectSocket()" disabled style="margin-top: 10px; background: #dc3545;">断开连接</button>
+            
+            <div id="status" class="status disconnected">未连接</div>
+            
+            <div style="margin-top: 20px; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+                <h3 style="margin-bottom: 15px; color: #333;">任务控制</h3>
+                <div style="display: flex; gap: 10px;">
+                    <button class="btn" id="startTaskBtn" onclick="startTask()" disabled style="background: #28a745; flex: 1;">开始任务</button>
+                    <button class="btn" id="stopTaskBtn" onclick="stopTask()" disabled style="background: #ffc107; color: #333; flex: 1;">停止任务</button>
+                    <button class="btn" id="getStatusBtn" onclick="getTaskStatus()" disabled style="background: #17a2b8; flex: 1;">查询状态</button>
+                </div>
+                <div id="taskStatus" style="margin-top: 15px; padding: 10px; background: white; border-radius: 6px; font-weight: 600; text-align: center; color: #666;">
+                    任务状态：未连接
+                </div>
+            </div>
+            
+            <div style="margin-top: 20px; padding: 20px; background: #fff; border-radius: 8px;">
+                <h3 style="margin-bottom: 15px; color: #333;">事件接收</h3>
+                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                    <input type="text" id="customEventInput" placeholder="输入要监听的事件名" style="flex: 1; padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px;">
+                    <button class="btn" id="addEventBtn" onclick="addCustomEventListener()" style="flex: 0 0 140px;">添加监听</button>
+                </div>
+                <div id="eventList" style="background: #f8f9fa; border-radius: 6px; padding: 10px; min-height: 44px; font-size: 13px; color: #555;">
+                    暂无事件监听，添加后可实时查看数据
+                </div>
+            </div>
+
+            <div class="log-container">
+                <h3>连接日志</h3>
+                <button class="clear-btn" onclick="clearLog()">清空日志</button>
+                <div id="log" class="log"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let socket = null;
+        const serverUrlInput = document.getElementById('serverUrl');
+        const tokenInput = document.getElementById('token');
+        const taskIdInput = document.getElementById('taskId');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const startTaskBtn = document.getElementById('startTaskBtn');
+        const stopTaskBtn = document.getElementById('stopTaskBtn');
+        const getStatusBtn = document.getElementById('getStatusBtn');
+        const statusDiv = document.getElementById('status');
+        const taskStatusDiv = document.getElementById('taskStatus');
+        const logDiv = document.getElementById('log');
+        const customEventInput = document.getElementById('customEventInput');
+        const eventListDiv = document.getElementById('eventList');
+        const customEventHandlers = new Map(); // eventName -> handler
+
+        function addLog(message, type = 'info') {
+            const time = new Date().toLocaleTimeString();
+            const logItem = document.createElement('div');
+            logItem.className = `log-item ${type}`;
+            logItem.innerHTML = `<span class="log-time">[${time}]</span>${message}`;
+            logDiv.appendChild(logItem);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function clearLog() {
+            logDiv.innerHTML = '';
+        }
+
+        function updateStatus(status, message) {
+            statusDiv.className = `status ${status}`;
+            statusDiv.textContent = message;
+        }
+
+        function connectSocket() {
+            const serverUrl = serverUrlInput.value.trim();
+            const token = tokenInput.value.trim();
+            const taskId = taskIdInput.value.trim();
+
+            if (!serverUrl) {
+                alert('请输入服务器地址');
+                return;
+            }
+
+            if (!token) {
+                alert('请输入 Token');
+                return;
+            }
+
+            if (!taskId) {
+                alert('请输入 Task ID');
+                return;
+            }
+
+            if (socket && socket.connected) {
+                addLog('已经连接，请先断开', 'error');
+                return;
+            }
+
+            addLog(`正在连接到 ${serverUrl}... (Task ID: ${taskId})`, 'info');
+            updateStatus('connecting', '连接中...');
+            connectBtn.disabled = true;
+
+            // 连接 Socket.IO
+            socket = io(serverUrl, {
+                auth: {
+                    token: token,
+                    taskId: taskId
+                },
+                // 或者使用 query 参数
+                // query: {
+                //     token: token,
+                //     taskId: taskId
+                // },
+                transports: ['websocket', 'polling'],
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 5000,
+                reconnectionAttempts: 5
+            });
+
+            // 预注册自定义事件监听
+            customEventHandlers.forEach((handler, eventName) => {
+                socket.on(eventName, handler);
+            });
+
+            // 连接成功
+            socket.on('connect', () => {
+                addLog('✅ Socket.IO 连接成功！', 'success');
+                addLog(`Socket ID: ${socket.id}`, 'info');
+                updateStatus('connected', '已连接');
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            });
+
+            // 服务器发送的 connected 事件（包含用户信息）
+            socket.on('connected', (data) => {
+                addLog(`✅ 服务器确认连接，用户 ID: ${data.uid}, Task ID: ${data.taskId}`, 'success');
+                addLog(`用户信息: ${JSON.stringify(data, null, 2)}`, 'info');
+                // 启用任务控制按钮
+                startTaskBtn.disabled = false;
+                stopTaskBtn.disabled = false;
+                getStatusBtn.disabled = false;
+            });
+
+            // 监听任务状态变化
+            socket.on('task:status', (data) => {
+                const taskIdInfo = data.taskId ? ` [Task ID: ${data.taskId}]` : '';
+                addLog(`📊 任务状态更新: ${data.message} (运行中: ${data.isRunning})${taskIdInfo}`, 'info');
+                updateTaskStatus(data.isRunning, data.message, data.taskId);
+            });
+
+            // 连接错误
+            socket.on('connect_error', (error) => {
+                addLog(`❌ 连接错误: ${error.message}`, 'error');
+                if (error.message === 'AUTH_FAILED') {
+                    addLog('认证失败，请检查 Token 是否正确', 'error');
+                } else if (error.message === 'TASKID_REQUIRED') {
+                    addLog('缺少 Task ID，请确保传递了 taskId 参数', 'error');
+                }
+                updateStatus('disconnected', '连接失败');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            });
+
+            // 断开连接
+            socket.on('disconnect', (reason) => {
+                addLog(`⚠️ 连接断开: ${reason}`, 'error');
+                updateStatus('disconnected', '已断开');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                // 禁用任务控制按钮
+                startTaskBtn.disabled = true;
+                stopTaskBtn.disabled = true;
+                getStatusBtn.disabled = true;
+                taskStatusDiv.textContent = '任务状态：未连接';
+            });
+
+            // 重连尝试
+            socket.on('reconnect_attempt', (attemptNumber) => {
+                addLog(`🔄 正在重连... (尝试 ${attemptNumber})`, 'info');
+            });
+
+            // 重连成功
+            socket.on('reconnect', (attemptNumber) => {
+                addLog(`✅ 重连成功！(尝试 ${attemptNumber} 次)`, 'success');
+                updateStatus('connected', '已连接');
+            });
+
+            // 重连失败
+            socket.on('reconnect_failed', () => {
+                addLog('❌ 重连失败，请检查网络或服务器状态', 'error');
+                updateStatus('disconnected', '重连失败');
+            });
+
+            // 监听其他自定义事件（根据你的服务器实际事件添加）
+            socket.on('task_result', (data) => {
+                addLog(`📋 任务结果: ${JSON.stringify(data, null, 2)}`, 'info');
+            });
+
+            socket.on('task_progress', (data) => {
+                addLog(`📊 任务进度: ${JSON.stringify(data, null, 2)}`, 'info');
+            });
+
+            // 错误事件
+            socket.on('error', (error) => {
+                addLog(`❌ 错误: ${JSON.stringify(error)}`, 'error');
+            });
+        }
+
+        function disconnectSocket() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+                addLog('🔌 主动断开连接', 'info');
+                updateStatus('disconnected', '已断开');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            }
+        }
+
+        // 页面关闭时断开连接
+        window.addEventListener('beforeunload', () => {
+            if (socket) {
+                socket.disconnect();
+            }
+        });
+
+        // Enter 键连接
+        tokenInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                connectSocket();
+            }
+        });
+
+        taskIdInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                connectSocket();
+            }
+        });
+
+        // 更新任务状态显示
+        function updateTaskStatus(isRunning, message, taskId = null) {
+            if (isRunning) {
+                taskStatusDiv.style.background = '#d4edda';
+                taskStatusDiv.style.color = '#155724';
+                taskStatusDiv.style.border = '1px solid #c3e6cb';
+            } else {
+                taskStatusDiv.style.background = '#fff3cd';
+                taskStatusDiv.style.color = '#856404';
+                taskStatusDiv.style.border = '1px solid #ffeaa7';
+            }
+            const taskIdInfo = taskId ? ` [Task ID: ${taskId}]` : '';
+            taskStatusDiv.textContent = `任务状态：${message}${taskIdInfo}`;
+        }
+
+        // 开始任务
+        function startTask() {
+            if (!socket || !socket.connected) {
+                addLog('❌ 请先连接 Socket.IO', 'error');
+                return;
+            }
+
+            const taskId = taskIdInput.value.trim();
+            addLog(`📤 发送开始任务请求... (Task ID: ${taskId})`, 'info');
+            socket.emit('task:start', {}, (response) => {
+                if (response && response.success) {
+                    addLog(`✅ ${response.message} (Task ID: ${taskId})`, 'success');
+                } else {
+                    addLog(`❌ ${response ? response.message : '开始任务失败'} (Task ID: ${taskId})`, 'error');
+                }
+            });
+        }
+
+        // 停止任务
+        function stopTask() {
+            if (!socket || !socket.connected) {
+                addLog('❌ 请先连接 Socket.IO', 'error');
+                return;
+            }
+
+            const taskId = taskIdInput.value.trim();
+            addLog(`📤 发送停止任务请求... (Task ID: ${taskId})`, 'info');
+            socket.emit('task:stop', {}, (response) => {
+                if (response && response.success) {
+                    addLog(`✅ ${response.message} (Task ID: ${taskId})`, 'success');
+                } else {
+                    addLog(`❌ ${response ? response.message : '停止任务失败'} (Task ID: ${taskId})`, 'error');
+                }
+            });
+        }
+
+        // 查询任务状态
+        function getTaskStatus() {
+            if (!socket || !socket.connected) {
+                addLog('❌ 请先连接 Socket.IO', 'error');
+                return;
+            }
+
+            const taskId = taskIdInput.value.trim();
+            addLog(`📤 查询任务状态... (Task ID: ${taskId})`, 'info');
+            socket.emit('task:getStatus', {}, (response) => {
+                if (response && response.success) {
+                    const taskIdInfo = response.taskId ? ` [Task ID: ${response.taskId}]` : '';
+                    addLog(`📊 任务状态: ${response.message} (运行中: ${response.isRunning})${taskIdInfo}`, 'info');
+                    updateTaskStatus(response.isRunning, response.message, response.taskId);
+                } else {
+                    addLog(`❌ ${response ? response.message : '查询状态失败'} (Task ID: ${taskId})`, 'error');
+                }
+            });
+        }
+
+        function addCustomEventListener() {
+            const eventName = customEventInput.value.trim();
+            if (!eventName) {
+                alert('请输入事件名');
+                return;
+            }
+            if (customEventHandlers.has(eventName)) {
+                addLog(`ℹ️ 已存在事件监听: ${eventName}`, 'info');
+                return;
+            }
+
+            const handler = (payload) => {
+                addLog(`📥 [${eventName}] ${JSON.stringify(payload, null, 2)}`, 'info');
+            };
+
+            customEventHandlers.set(eventName, handler);
+            if (socket) {
+                socket.on(eventName, handler);
+            }
+            renderCustomEventList();
+            addLog(`👂 已添加事件监听: ${eventName}`, 'success');
+            customEventInput.value = '';
+        }
+
+        function removeCustomEventListener(eventName) {
+            const handler = customEventHandlers.get(eventName);
+            if (!handler) return;
+            if (socket) {
+                socket.off(eventName, handler);
+            }
+            customEventHandlers.delete(eventName);
+            renderCustomEventList();
+            addLog(`🛑 已移除事件监听: ${eventName}`, 'info');
+        }
+
+        function renderCustomEventList() {
+            if (customEventHandlers.size === 0) {
+                eventListDiv.innerHTML = '暂无事件监听，添加后可实时查看数据';
+                return;
+            }
+
+            eventListDiv.innerHTML = '';
+            customEventHandlers.forEach((_, eventName) => {
+                const item = document.createElement('div');
+                item.style.display = 'flex';
+                item.style.alignItems = 'center';
+                item.style.justifyContent = 'space-between';
+                item.style.padding = '6px 10px';
+                item.style.background = '#fff';
+                item.style.borderRadius = '4px';
+                item.style.marginBottom = '6px';
+                item.style.border = '1px solid #e0e0e0';
+
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = eventName;
+                nameSpan.style.fontWeight = '600';
+
+                const removeBtn = document.createElement('button');
+                removeBtn.textContent = '移除';
+                removeBtn.style.padding = '4px 10px';
+                removeBtn.style.border = 'none';
+                removeBtn.style.borderRadius = '4px';
+                removeBtn.style.background = '#dc3545';
+                removeBtn.style.color = '#fff';
+                removeBtn.style.cursor = 'pointer';
+                removeBtn.style.fontSize = '12px';
+                removeBtn.onclick = () => removeCustomEventListener(eventName);
+
+                item.appendChild(nameSpan);
+                item.appendChild(removeBtn);
+                eventListDiv.appendChild(item);
+            });
+        }
+    </script>
+</body>
+</html>
+
