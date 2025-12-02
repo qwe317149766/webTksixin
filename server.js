@@ -941,8 +941,11 @@ app.post('/api/v1/bills/settle', async (req, res) => {
       config,
     };
 
-    await QuotaService.updateBillPayConfig(bill.id, updatedPayConfig);
-    await QuotaService.updateBillStatus(bill.id, 2);
+    await QuotaService.updateBillSettlement(bill.id, {
+      payConfig: updatedPayConfig,
+      settleAmount: settlementCost,
+      status: 2,
+    });
 
     return Response.success(
       res,

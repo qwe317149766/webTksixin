@@ -392,10 +392,11 @@ async function deductFreezeAndCreateBill(params) {
           buy_num,
           pay_config,
           complate_num,
+          settle_amount,
           status,
           create_time,
           update_time
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         billType,
         mark,
@@ -411,6 +412,7 @@ async function deductFreezeAndCreateBill(params) {
         buyNum,
         typeof payConfig === 'string' ? payConfig : JSON.stringify(payConfig || {}),
         completedNum,
+        0,
         0, // 0=待结算
         now,
         now,
@@ -483,6 +485,7 @@ async function getBillByTask(uid, taskId) {
             buy_num,
             pay_config,
             complate_num,
+            settle_amount,
             status,
             create_time,
             update_time
@@ -529,6 +532,68 @@ async function updateBillPayConfig(billId, config = {}) {
       WHERE id = ?`,
     [payload, billId]
   );
+}
+
+async function updateBillSettleAmount(billId, amount = 0) {
+  if (!billId) return;
+  await authMysqlPool.execute(
+    `UPDATE uni_user_bill
+        SET settle_amount = ?, update_time = UNIX_TIMESTAMP()
+      WHERE id = ?`,
+    [Number(amount) || 0, billId]
+  );
+}
+
+async function updateBillSettlement(billId, { payConfig, settleAmount, status } = {}) {
+  if (!billId) return;
+  const updates = [];
+  const params = [];
+
+  if (payConfig !== undefined) {
+    const payload =
+      typeof payConfig === 'string' ? payConfig : JSON.stringify(payConfig || {});
+    updates.push('pay_config = ?');
+    params.push(payload);
+  }
+
+  if (settleAmount !== undefined) {
+    updates.push('settle_amount = ?');
+    params.push(Number(settleAmount) || 0);
+  }
+
+  if (status !== undefined && status !== null) {
+    updates.push('status = ?');
+    params.push(status);
+  }
+
+  if (!updates.length) {
+    return;
+  }
+
+  let connection;
+  try {
+    connection = await authMysqlPool.getConnection();
+    await connection.beginTransaction();
+
+    const setClause = `${updates.join(', ')}, update_time = UNIX_TIMESTAMP()`;
+    await connection.execute(
+      `UPDATE uni_user_bill
+          SET ${setClause}
+        WHERE id = ?`,
+      [...params, billId]
+    );
+
+    await connection.commit();
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
+    throw error;
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
 }
 
 async function updateBillStatus(billId, status = 1) {
@@ -652,7 +717,7 @@ async function getUserBills({ uid, page = 1, pageSize = 10, status, taskId }) {
   const whereClause = whereParts.join(' AND ');
 
   const [rows] = await authMysqlPool.execute(
-    `SELECT id, bill_type, bill_mark, bill_title, bill_category, taskId, num, pm, uid, before_num, after_num, bill_order_id, buy_num, pay_config, complate_num AS completed_num, status, create_time, update_time
+    `SELECT id, bill_type, bill_mark, bill_title, bill_category, taskId, num, pm, uid, before_num, after_num, bill_order_id, buy_num, pay_config, complate_num AS completed_num, settle_amount, status, create_time, update_time
      FROM uni_user_bill
      WHERE ${whereClause}
      ORDER BY id DESC
@@ -684,6 +749,8 @@ module.exports = {
   getBillByTask,
   parsePayConfigData,
   updateBillPayConfig,
+  updateBillSettleAmount,
+  updateBillSettlement,
   releaseFrozenAndRefund,
   updateBillStatus,
 };

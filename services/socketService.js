@@ -647,6 +647,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
       const content = batchInfo.content || finalTaskInfo.content || [];
       const msgType = batchInfo.msgType ?? finalTaskInfo.msgType ?? 0;
       const proxy = batchInfo.proxy || finalTaskInfo.proxy || '';
+      
       const resolvedChannel = MessageSender.resolveChannel(
         batchInfo.sendType ??
           finalTaskInfo.sendType ??

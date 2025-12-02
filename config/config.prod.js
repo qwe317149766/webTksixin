@@ -85,9 +85,13 @@ module.exports = {
     concurrency: 1, // 并发数
     lowThreshold: 2, // 低阈值
     cookieRatio: {
-      multiplier: 1.5, // cookies 总数倍数（相对于 tasks.length）
+      multiplier: 1, // cookies 总数倍数（相对于 tasks.length）
       priority1Ratio: 2/3, // priority_code=1 的比例
       priority0Ratio: 1/3, // priority_code=0 的比例
     },
+    needMoreThrottleMs: 100,
+    sender: {
+      channel: 'app',
+    }
   },
 }
