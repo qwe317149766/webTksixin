@@ -150,6 +150,7 @@ class TiktokAppSdk {
       if (!receiverId || !messageData || !cookieData) {
         throw new Error('Missing required parameters: receiverId, messageData, cookieData');
       }
+      console.log("[cookieData1111:]",cookieData)
 
       const proxyUrl = proxyConfig || null;
 
@@ -187,6 +188,7 @@ class TiktokAppSdk {
       let finalConvId = conversationId;
       if (!finalConvId) {
         try {
+          console.log("[cookieData22222:]",cookieData)
           const conversationResult = await TikTokService.createConversation(
             receiverId,
             cookieData,
@@ -210,7 +212,7 @@ class TiktokAppSdk {
       }
 
       // 发送消息
-      const result = await TikTokService.sendMessageStandalone(
+      const sdkResult = await TikTokService.sendMessageStandalone(
         receiverId,
         finalConvId,
         isCardMessage,
@@ -223,10 +225,64 @@ class TiktokAppSdk {
         { postDataHex: postDataHexOverride }
       );
 
-      return {
-        result,
-        conversationId: finalConvId
-      };
+      const sendBody = sdkResult;
+      const status = sendBody?.status || sendBody?.status_code;
+      const filterReason = sendBody?.filter_reason;
+      const checkMessageRaw =
+        sendBody?.check_message || sendBody?.checkMessage || null;
+      let checkMessage = null;
+      if (typeof checkMessageRaw === 'string') {
+        try {
+          checkMessage = JSON.parse(checkMessageRaw);
+        } catch {
+          checkMessage = checkMessageRaw;
+        }
+      } else if (checkMessageRaw && typeof checkMessageRaw === 'object') {
+        checkMessage = checkMessageRaw;
+      }
+
+      const buildResponse = (code, msg, data) => ({
+        code,
+        msg,
+        data,
+        conversationId: finalConvId,
+      });
+
+      if (!sendBody) {
+        return buildResponse(-1, '发送结果为空', null);
+      }
+
+      if (status === 0) {
+        return buildResponse(0, '发送消息成功', {
+          ...sendBody,
+          filter_reason: filterReason,
+        });
+      }
+
+      const cm = checkMessage || {};
+      const statusCode = cm.status_code ?? cm.statusCode ?? null;
+
+      if (statusCode === 7193) {
+        return buildResponse(10001, '重复发送', sendBody);
+      }
+
+      if ([7202, 7278, 7409].includes(statusCode)) {
+        return buildResponse(10001, '接收者被限制', sendBody);
+      }
+
+      if ([7201, 7289, 7290].includes(statusCode)) {
+        return buildResponse(10004, '发送端限制私信', sendBody);
+      }
+
+      if (statusCode === 7180) {
+        return buildResponse(10002, '您发送太快了', sendBody);
+      }
+
+      if ([7195, 7179].includes(statusCode)) {
+        return buildResponse(-10000, '维护社区', sendBody);
+      }
+
+      return buildResponse(-1, '发送消息失败', checkMessage || sendBody);
     } catch (error) {
       console.error('Error sending message:', error);
       throw error;

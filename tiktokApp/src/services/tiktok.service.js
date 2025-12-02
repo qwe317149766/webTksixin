@@ -1,5 +1,11 @@
 const zlib = require('zlib');
 const crypto = require('crypto');
+let redisClient = null;
+try {
+  redisClient = require('../../../config/redis');
+} catch (error) {
+  console.warn('[TikTokService] Redis 客户端初始化失败，仅使用内存缓存:', error.message);
+}
 const { CurlHttpSdk } = require('../../../CurlHttpSdk');
 const { makeArgus } = require('../utils/encryption/argus');
 const { makeGorgon } = require('../utils/encryption/gorgon');
@@ -24,6 +30,9 @@ const {
 const { mssdkEncrypt, mssdkDecrypt } = require('../utils/encryption/mssdk');
 const { makeHex26_1, makeHex26_2 } = require('../utils/encryption/hex26');
 const { buildGuard } = require('../utils/encryption/device_ticket_data');
+const REDIS_SEED_KEY_PREFIX = 'tiktokApp:seed:';
+const REDIS_TOKEN_KEY_PREFIX = 'tiktokApp:token:';
+const REDIS_CACHE_TTL = (Settings.CACHE_TTL || 24 * 60 * 60);
 /**
  * 简单的内存缓存实现
  * 缓存 seed 和 token，基于 cookieData 的 hash 作为 key
@@ -344,6 +353,35 @@ class TikTokService {
   }
 
   /**
+   * 基于关键字段生成 Redis 哈希
+   */
+  static buildRedisAccountHash(cookies = {}) {
+    try {
+      const deviceId = cookies.device_id || '';
+      const uid = cookies.uid || cookies.user_id || '';
+      const sessionId = cookies.sessionid || cookies.session_id || cookies.sid_tt || '';
+      const raw = `${deviceId}:${uid}:${sessionId}`;
+      if (!raw.replace(/:/g, '')) {
+        return null;
+      }
+      return crypto.createHash('md5').update(raw).digest('hex');
+    } catch (error) {
+      console.warn('Failed to build Redis account hash:', error.message);
+      return null;
+    }
+  }
+
+  static getSeedRedisKey(cookies = {}) {
+    const hash = this.buildRedisAccountHash(cookies);
+    return hash ? `${REDIS_SEED_KEY_PREFIX}${hash}` : null;
+  }
+
+  static getTokenRedisKey(cookies = {}) {
+    const hash = this.buildRedisAccountHash(cookies);
+    return hash ? `${REDIS_TOKEN_KEY_PREFIX}${hash}` : null;
+  }
+
+  /**
    * 根据 cookies 决定使用的 API 域名
    */
   static getApiBaseUrlFromCookies(cookies = {}) {
@@ -440,7 +478,7 @@ class TikTokService {
     try {
       // 1. 解析 cookie_data
       const cookies = this.parseCookieData(cookieData);
-      
+      console.log("cookies:",cookies)
       // 2. 提取必要的 cookie 字段
       // 2.1 提取 uid：优先从 cookies.uid，如果没有则从 multi_sids 中提取
       let senderId = cookies.uid || cookies.user_id;
@@ -751,7 +789,7 @@ class TikTokService {
       `ttreq=${cookies.ttreq || ''}`,
       `passport_csrf_token=${cookies.passport_csrf_token || ''}`,
       `passport_csrf_token_default=${cookies.passport_csrf_token_default || ''}`,
-      `store-country-code-src=${cookies['store-country-code-src'] || ''}`,
+      `store-country-code-src=${cookies['store-country-code-src'] || 'uid'}`,
       `multi_sids=${cookies.multi_sids || ''}`,
       `cmpl_token=${cookies.cmpl_token || ''}`,
       `d_ticket=${cookies.d_ticket || ''}`,
@@ -759,12 +797,12 @@ class TikTokService {
       `uid_tt=${cookies.uid_tt || ''}`,
       `uid_tt_ss=${cookies.uid_tt_ss || ''}`,
       `sid_tt=${cookies.sid_tt  || ''}`,
-      `sessionid=${cookies.sessionid || ''}`,
-      `sessionid_ss=${cookies.sessionid_ss || ''}`,
+      `sessionid=${cookies.sessionid || cookies.sessionid_ss || ''}`,
+      `sessionid_ss=${cookies.sessionid_ss || cookies.sessionid || ''}`,
       `tt_session_tlb_tag=${cookies['tt_session_tlb_tag'] || 'sttt%7C5%7CDQp2JeFvbsRVd066xKPLJP________-5NWxRwFjRS8rZNh5mBfI6XbTiVUUkftEYH0ToFGFa3-c%3D'}`,
       `tt-target-idc=${cookies['tt-target-idc'] || ''}`,
       `tt_ticket_guard_has_set_public_key=1`, 
-      `store-country-sign=${cookies['store-country-sign'] || cookies.store_country_sign} || ''`,
+      `store-country-sign=${cookies['store-country-sign']  || ''}`,
       `msToken=${cookies.msToken || cookies.ms_token || ''}`,
       `odin_tt=${cookies.odin_tt || cookies.odin_tt || ''}`
     ];
@@ -1137,7 +1175,20 @@ class TikTokService {
     try {
       // 1. 解析 cookie_data
       const cookies = this.parseCookieData(cookieData);
-      
+      const redisSeedKey = redisClient ? this.getSeedRedisKey(cookies) : null;
+      if (redisClient && redisSeedKey) {
+        try {
+          const cachedValue = await redisClient.get(redisSeedKey);
+          if (cachedValue) {
+            const parsed = JSON.parse(cachedValue);
+            if (parsed && parsed.seed !== undefined && parsed.seedType !== undefined) {
+              return [parsed.seed, parsed.seedType];
+            }
+          }
+        } catch (error) {
+          console.warn('[TikTokService] 读取 Redis seed 缓存失败:', error.message);
+        }
+      }
       // 2. 提取必要的字段
       // 优先使用传入的 installId，然后从 cookies 中获取
       const iid = installId || cookies.install_id;
@@ -1206,18 +1257,20 @@ class TikTokService {
       );
       
       // 8. 构建完整的请求头
+      const copyCookies = { ...cookies };
+      copyCookies['store-country-code']  = 'us';
       const requestHeaders = {
         ...headers,
         'rpc-persist-pyxis-policy-v-tnc': '1',
         'rpc-persist-pyxis-policy-state-law-is-ca': '1',
         'Accept-Encoding': 'gzip',
         'x-tt-request-tag': 'n=0;nr=111;bg=0;t=0',
-        // 'rpc-persist-pns-region-3': 'US|6252001|5332921',
-        // 'rpc-persist-pns-region-2': 'US|6252001|5332921',
-        // 'rpc-persist-pns-region-1': 'US|6252001|5332921',
-        "rpc-persist-pns-region-1": "TW|1668284",
-        "rpc-persist-pns-region-2": "TW|1668284",
-        "rpc-persist-pns-region-3": "TW|1668284",
+        'rpc-persist-pns-region-3': 'US|6252001|5332921',
+        'rpc-persist-pns-region-2': 'US|6252001|5332921',
+        'rpc-persist-pns-region-1': 'US|6252001|5332921',
+        // "rpc-persist-pns-region-1": "TW|1668284",
+        // "rpc-persist-pns-region-2": "TW|1668284",
+        // "rpc-persist-pns-region-3": "TW|1668284",
         'x-tt-pba-enable': '1',
         'Accept': '*/*',
         'x-bd-kmsv': '0',
@@ -1229,15 +1282,17 @@ class TikTokService {
         'x-tt-dm-status': 'login=1;ct=1;rt=8',
         'X-Tt-Token': cookies['X-Tt-Token'] || cookies['x_tt_token'] || '',
         'passport-sdk-version': '-1',
-        'x-tt-store-region': 'kr',      //从ck中获取
+        'x-tt-store-region': 'us',      //从ck中获取
         'x-tt-store-region-src': 'uid',  //从ck中获取
         'User-Agent': cookies['User-Agent'] || cookies['user_agent'] || 'okhttp/3.12.13.20',
         'Content-Type': 'application/octet-stream',
         'Host': 'mssdk16-normal-useast5.tiktokv.us',
-        'Cookie': this.buildCookieString(cookies)
+        'Cookie': this.buildCookieString(copyCookies)
       };
       
       // 9. 发送请求
+      console.log('requestHeaders:',requestHeaders)
+      console.log("url:",url)
       const client = this.getHttpClient(proxyUrl);
       const response = await client.post(url, Buffer.from(postDataHex, 'hex'), {
         headers: requestHeaders,
@@ -1280,6 +1335,18 @@ class TikTokService {
       const seedType = Math.floor(parseInt(algorithmHex, 16) / 2);
       console.log("seed:",seed)
       console.log("seedType:",seedType)
+      if (redisClient && redisSeedKey) {
+        try {
+          await redisClient.set(
+            redisSeedKey,
+            JSON.stringify({ seed: seed || '', seedType }),
+            'EX',
+            REDIS_CACHE_TTL
+          );
+        } catch (error) {
+          console.warn('[TikTokService] 写入 Redis seed 缓存失败:', error.message);
+        }
+      }
       return [seed || '', seedType];
       
     } catch (error) {
@@ -1299,6 +1366,17 @@ class TikTokService {
     try {
       // 1. 解析 cookie_data
       const cookies = this.parseCookieData(cookieData);
+      const redisTokenKey = redisClient ? this.getTokenRedisKey(cookies) : null;
+      if (redisClient && redisTokenKey) {
+        try {
+          const cachedToken = await redisClient.get(redisTokenKey);
+          if (cachedToken) {
+            return cachedToken;
+          }
+        } catch (error) {
+          console.warn('[TikTokService] 读取 Redis token 缓存失败:', error.message);
+        }
+      }
       
       // 2. 提取必要的字段
       // 优先使用传入的 installId，然后从 cookies 中获取
@@ -1349,7 +1427,8 @@ class TikTokService {
         queryString,
         postDataHex
       );
-      
+      const copyCookies = { ...cookies };
+      copyCookies['store-country-code']  = 'us';
       // 8. 构建完整的请求头
       const requestHeaders = {
         ...headers,
@@ -1376,7 +1455,7 @@ class TikTokService {
         'User-Agent': cookies['User-Agent'] || cookies['user_agent'] || 'okhttp/3.12.13.20',
         'Content-Type': 'application/octet-stream',
         'Host': 'mssdk16-normal-useast5.tiktokv.us',
-        'Cookie': this.buildCookieString(cookies)
+        'Cookie': this.buildCookieString(copyCookies)
       };
       
       // 9. 发送请求
@@ -1439,8 +1518,15 @@ class TikTokService {
           afterDecryptToken = await parseTokenDecrypt(tokenDecryptRes);
         }
         
-        const token = afterDecryptToken.token;
-        return token || '';
+        const token = afterDecryptToken.token || '';
+        if (redisClient && redisTokenKey && token) {
+          try {
+            await redisClient.set(redisTokenKey, token, 'EX', REDIS_CACHE_TTL);
+          } catch (error) {
+            console.warn('[TikTokService] 写入 Redis token 缓存失败:', error.message);
+          }
+        }
+        return token;
       }
       
       // tokenDecryptBuffer 不存在
@@ -1456,9 +1542,15 @@ class TikTokService {
       
       // 12. 解析解密后的 token
       const afterDecryptToken = await parseTokenDecrypt(tokenDecryptRes);
-      const token = afterDecryptToken.token;
-      
-      return token || '';
+      const token = afterDecryptToken.token || '';
+      if (redisClient && redisTokenKey && token) {
+        try {
+          await redisClient.set(redisTokenKey, token, 'EX', REDIS_CACHE_TTL);
+        } catch (error) {
+          console.warn('[TikTokService] 写入 Redis token 缓存失败:', error.message);
+        }
+      }
+      return token;
       
     } catch (error) {
       console.error('Error in getToken:', error);
