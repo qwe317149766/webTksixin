@@ -61,16 +61,16 @@ async function emitTaskProgress(socketManager, uid, taskId) {
   }
 }
 
-async function finalizeTaskBill(taskId) {
+async function finalizeTaskBill(taskId, { force = false } = {}) {
   if (!taskId) {
     return;
   }
   try {
     const stats = await TaskStore.getTaskStats(taskId);
-    if (stats.remaining <= 0) {
+    if (force || stats.remaining <= 0) {
       await QuotaService.completeBillByTask(taskId, stats.success || 0);
       console.log(
-        `[Task] 已更新账单状态 (taskId=${taskId}) -> status=1, complate_num=${stats.success || 0}`
+        `[Task] 已更新账单状态 (taskId=${taskId}) -> status=1, complate_num=${stats.success || 0}, force=${force}`
       );
     }
   } catch (error) {
@@ -1027,6 +1027,7 @@ function initSocketServer(httpServer) {
       }
 
       await updateStatus('stopped', '任务已停止', { stoppedBy: uid });
+      await stopTaskQueue(uid, taskId, 'manual_stop');
       
       const response = { success: true, message: '任务已停止' };
       console.log(`[Socket] 用户 ${uid} 任务 ${taskId} 已停止`);
@@ -1131,6 +1132,8 @@ async function stopTaskQueue(userId, taskId, reason = 'manual') {
       console.log(`[Task] BatchRequester 已停止 (uid=${userId}, taskId=${taskId})`);
     }
   }
+
+  await finalizeTaskBill(taskId, { force: true });
 
   return { stopped: true };
 }
