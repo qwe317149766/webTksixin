@@ -350,8 +350,20 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
               data.data
             )}`
           );
-          tongJs = false
-          shouldRequeue = true;
+          const netKey = getRetryKey(task.taskId, `${task.uid}:net`);
+          const netAttempts = (taskRetryCounts.get(netKey) || 0) + 1;
+          if (netAttempts >= 5) {
+            console.warn(
+              `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 网络异常已达 ${netAttempts} 次，标记为失败`
+            );
+            taskRetryCounts.delete(netKey);
+            tongJs = true;
+            shouldRequeue = false;
+          } else {
+            taskRetryCounts.set(netKey, netAttempts);
+            tongJs = false;
+            shouldRequeue = true;
+          }
         } else {
           console.error(
             `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 发送失败: ${JSON.stringify(
