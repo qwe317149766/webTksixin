@@ -410,6 +410,7 @@ class TaskStore {
       batchNo,
       taskId,
       userId,
+      addedCount: newTasks.length,
     };
   }
 
