@@ -922,9 +922,8 @@ app.post('/api/v1/bills/settle', async (req, res) => {
       settlementCost,
     });
     //需要判断是否成功
-    if (!releaseResult.success) {
-      return Response.error(res, releaseResult.message || '结算失败', -1, null, 400);
-    }
+    console.log("releaseResult:",releaseResult)
+  
     const updatedPayConfig = {
       ...(storedPayConfig || {}),
       settlement: {
