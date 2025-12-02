@@ -570,30 +570,13 @@ async function updateBillSettlement(billId, { payConfig, settleAmount, status } 
     return;
   }
 
-  let connection;
-  try {
-    connection = await authMysqlPool.getConnection();
-    await connection.beginTransaction();
-
-    const setClause = `${updates.join(', ')}, update_time = UNIX_TIMESTAMP()`;
-    await connection.execute(
-      `UPDATE uni_user_bill
-          SET ${setClause}
-        WHERE id = ?`,
-      [...params, billId]
-    );
-
-    await connection.commit();
-  } catch (error) {
-    if (connection) {
-      await connection.rollback();
-    }
-    throw error;
-  } finally {
-    if (connection) {
-      connection.release();
-    }
-  }
+  const setClause = `${updates.join(', ')}, update_time = UNIX_TIMESTAMP()`;
+  await authMysqlPool.execute(
+    `UPDATE uni_user_bill
+        SET ${setClause}
+      WHERE id = ?`,
+    [...params, billId]
+  );
 }
 
 async function updateBillStatus(billId, status = 1) {
@@ -693,6 +676,93 @@ async function releaseFrozenAndRefund({ uid, taskId, settlementCost = 0 }) {
     }
   }
 }
+
+async function settleTaskBilling({ uid, billId, taskId, settlementCost, payConfig, status = 2 }) {
+  if (!uid || !billId || settlementCost === undefined) {
+    throw new Error('settleTaskBilling 参数错误');
+  }
+
+  let connection;
+  try {
+    connection = await authMysqlPool.getConnection();
+    await connection.beginTransaction();
+
+    const [rows] = await connection.execute(
+      `SELECT ${QUOTA_COLUMN}, frozen_score_num FROM ${QUOTA_TABLE} WHERE id = ? FOR UPDATE`,
+      [uid]
+    );
+
+    if (!rows.length) {
+      throw new Error('用户不存在');
+    }
+
+    const currentScore = Number(rows[0][QUOTA_COLUMN] || 0);
+    const currentFrozen = Number(rows[0].frozen_score_num || 0);
+    const normalizedSettlement = Math.max(0, Number(settlementCost) || 0);
+    const usedFrozen = Math.min(currentFrozen, normalizedSettlement);
+    const refundAmount = Math.max(0, currentFrozen - normalizedSettlement);
+
+    const [updateResult] = await connection.execute(
+      `UPDATE ${QUOTA_TABLE}
+         SET ${QUOTA_COLUMN} = ${QUOTA_COLUMN} + ?,
+             frozen_score_num = GREATEST(frozen_score_num - ?, 0),
+             update_time = UNIX_TIMESTAMP()
+       WHERE id = ?`,
+      [refundAmount, currentFrozen, uid]
+    );
+
+    if (updateResult.affectedRows === 0) {
+      throw new Error('更新余额失败');
+    }
+
+    const newScore = currentScore + refundAmount;
+
+    const updates = [];
+    const params = [];
+
+    if (payConfig !== undefined) {
+      const payload =
+        typeof payConfig === 'string' ? payConfig : JSON.stringify(payConfig || {});
+      updates.push('pay_config = ?');
+      params.push(payload);
+    }
+
+    updates.push('settle_amount = ?');
+    params.push(normalizedSettlement);
+
+    if (status !== undefined && status !== null) {
+      updates.push('status = ?');
+      params.push(status);
+    }
+
+    const setClause = `${updates.join(', ')}, update_time = UNIX_TIMESTAMP()`;
+    await connection.execute(
+      `UPDATE uni_user_bill
+          SET ${setClause}
+        WHERE id = ?`,
+      [...params, billId]
+    );
+
+    await connection.commit();
+    await authRedis.hset(QUOTA_KEY, uid, newScore);
+
+    return {
+      currentFrozen,
+      usedFrozen,
+      refundAmount,
+      newScore,
+    };
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
+    throw error;
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+}
 async function getUserBills({ uid, page = 1, pageSize = 10, status, taskId }) {
   if (!uid) {
     throw new Error('uid 不能为空');
@@ -751,6 +821,7 @@ module.exports = {
   updateBillPayConfig,
   updateBillSettleAmount,
   updateBillSettlement,
+  settleTaskBilling,
   releaseFrozenAndRefund,
   updateBillStatus,
 };

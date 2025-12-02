@@ -916,14 +916,6 @@ app.post('/api/v1/bills/settle', async (req, res) => {
     );
     const previewRefund = normalizeAmount(Math.max(0, frozenAmount - settlementCost));
 
-    const releaseResult = await QuotaService.releaseFrozenAndRefund({
-      uid: user.uid,
-      taskId,
-      settlementCost,
-    });
-    //需要判断是否成功
-    console.log("releaseResult:",releaseResult)
-  
     const updatedPayConfig = {
       ...(storedPayConfig || {}),
       settlement: {
@@ -933,17 +925,27 @@ app.post('/api/v1/bills/settle', async (req, res) => {
         settlementCost,
         frozenAmount,
         previewRefund,
-        actualRefund: releaseResult?.refundAmount || 0,
+        actualRefund: 0,
         syncedFromRedis,
         calculatedAt: Date.now(),
       },
       config,
     };
 
-    await QuotaService.updateBillSettlement(bill.id, {
+    const releaseResult = await QuotaService.settleTaskBilling({
+      uid: user.uid,
+      billId: bill.id,
+      taskId,
+      settlementCost,
       payConfig: updatedPayConfig,
-      settleAmount: settlementCost,
       status: 2,
+    });
+
+    updatedPayConfig.settlement.actualRefund = releaseResult?.refundAmount || 0;
+    await TaskStore.setTaskStatus(taskId, 'completed', {
+      userId: user.uid,
+      reason: 'settled',
+      updatedAt: Date.now(),
     });
 
     return Response.success(
