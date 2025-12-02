@@ -1,6 +1,6 @@
-const mysql = require('mysql2/promise');
-const config = require('../config');
+const mysqlPool = require('../config/database');
 const redis = require('../config/redis');
+const config = require('../config');
 
 /**
  * Cookie 状态更新工具类
@@ -91,7 +91,7 @@ async function updateCookieStatus({
   try {
     // 如果没有提供连接，创建新连接
     if (shouldCreateConnection) {
-      dbConnection = await mysql.createConnection(config.mysql);
+      dbConnection = await mysqlPool.getConnection();
     }
 
     // 检查是否需要跳过更新
@@ -165,7 +165,7 @@ async function updateCookieStatus({
   } finally {
     // 如果创建了新连接，需要关闭
     if (shouldCreateConnection && dbConnection) {
-      await dbConnection.end();
+      dbConnection.release();
     }
   }
 }
@@ -183,7 +183,7 @@ async function getNormalCookies(tableName, limit = 1, connection = null) {
 
   try {
     if (shouldCreateConnection) {
-      dbConnection = await mysql.createConnection(config.mysql);
+      dbConnection = await mysqlPool.getConnection();
     }
 
     const [records] = await dbConnection.execute(
@@ -201,7 +201,7 @@ async function getNormalCookies(tableName, limit = 1, connection = null) {
     throw error;
   } finally {
     if (shouldCreateConnection && dbConnection) {
-      await dbConnection.end();
+      dbConnection.release();
     }
   }
 }
