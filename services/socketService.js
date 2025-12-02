@@ -199,7 +199,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
     const tableName = 'uni_cookies_1';
     let dbConnection = null;
     let {task} = result.data;
-    triggerTaskProcessing(task.userId, task.taskId, config.task?.concurrency || 1);
+    
     const taskIdFromResult = task.taskId;
     console.log('taskIdFromResult:',taskIdFromResult)
     try {
@@ -210,8 +210,6 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
         if (!markResult.success) {
           console.log(`[Task] 任务 ${taskIdFromResult} 剩余数量已为 0，标记为完成`);
           await stopTaskQueue(task.userId, taskIdFromResult, 'completed');
-          batchRequester.stop();
-          await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
           return;
         }
         console.log(
@@ -399,8 +397,6 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
             if (!failResult.success) {
               console.log(`[Task] 任务 ${task.taskId} 剩余数量已为 0，标记为完成`);
               await stopTaskQueue(task.userId, task.taskId, 'completed');
-              batchRequester.stop();
-              await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
             } else {
               await emitTaskProgress(socketManager, task.userId, taskIdFromResult);
               if (failResult.remaining <= 0) {
@@ -423,6 +419,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
       if (dbConnection) {
         dbConnection.release();
       }
+      triggerTaskProcessing(task.userId, task.taskId,  1);
     }
   });
 
@@ -1047,7 +1044,6 @@ function initSocketServer(httpServer) {
         return;
       }
 
-      await updateStatus('stopped', '任务已停止', { stoppedBy: uid, isEnd: true });
       await stopTaskQueue(uid, taskId, 'manual_stop');
       
       const response = { success: true, message: '任务已停止' };
