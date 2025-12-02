@@ -1,5 +1,11 @@
 // config/config.dev.js
 module.exports = {
+  task: {
+    batchSize: 10,
+    concurrency: 10,
+    lowThreshold: 50,
+    needMoreThrottleMs: 10000,
+  },
   server: {
     port: 3000,
     workers: require('os').cpus().length,

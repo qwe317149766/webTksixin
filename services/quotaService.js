@@ -416,6 +416,69 @@ async function deductFreezeAndCreateBill(params) {
   }
 }
 
+async function completeBillByTask(taskId, completedNum = 0) {
+  if (!taskId) {
+    return;
+  }
+
+  try {
+    await authMysqlPool.execute(
+      `UPDATE uni_user_bill
+         SET status = 1,
+             complate_num = ?
+       WHERE taskId = ?
+         AND bill_type = 'sixin'
+         AND bill_category = 'frozen'`,
+      [completedNum, taskId]
+    );
+  } catch (error) {
+    console.error(`[Quota] 更新账单完成状态失败 (taskId=${taskId}):`, error.message);
+  }
+}
+async function getUserBills({ uid, page = 1, pageSize = 10, status, taskId }) {
+  if (!uid) {
+    throw new Error('uid 不能为空');
+  }
+  const normalizedPage = Math.max(1, parseInt(page, 10) || 1);
+  const normalizedPageSize = Math.min(100, Math.max(1, parseInt(pageSize, 10) || 10));
+  const offset = (normalizedPage - 1) * normalizedPageSize;
+
+  const whereParts = ['uid = ?', 'bill_type = ?', 'bill_category = ?'];
+  const params = [uid, 'sixin', 'frozen'];
+
+  if (status !== undefined && status !== null && status !== '') {
+    whereParts.push('status = ?');
+    params.push(status);
+  }
+
+  if (taskId) {
+    whereParts.push('taskId = ?');
+    params.push(taskId);
+  }
+
+  const whereClause = whereParts.join(' AND ');
+
+  const [rows] = await authMysqlPool.execute(
+    `SELECT id, bill_type, bill_mark, bill_title, bill_category, taskId, num, pm, uid, before_num, after_num, bill_order_id, buy_num, pay_config, complate_num AS completed_num, status, create_time, update_time
+     FROM uni_user_bill
+     WHERE ${whereClause}
+     ORDER BY id DESC
+     LIMIT ?, ?`,
+    [...params, offset, normalizedPageSize]
+  );
+
+  const [countRows] = await authMysqlPool.execute(
+    `SELECT COUNT(*) AS total FROM uni_user_bill WHERE ${whereClause}`,
+    params
+  );
+
+  return {
+    list: rows,
+    total: Number(countRows[0]?.total || 0),
+    page: normalizedPage,
+    pageSize: normalizedPageSize,
+  };
+}
 module.exports = {
   getQuota,
   ensureQuotaRecord,
@@ -423,5 +486,7 @@ module.exports = {
   addQuota,
   getPayConfigFromDB,
   deductFreezeAndCreateBill, // 扣减、冻结并生成账单（组合操作）
+  getUserBills,
+  completeBillByTask,
 };
 

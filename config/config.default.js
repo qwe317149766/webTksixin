@@ -13,6 +13,7 @@ module.exports = {
     batchSize: 10, // 批量处理任务数量
     concurrency: 10, // 并发数
     lowThreshold: 50, // 低阈值
+    needMoreThrottleMs: 10000, // needMore 最小间隔
     cookieRatio: {
       multiplier: 1.5, // cookies 总数倍数（相对于 tasks.length）
       priority1Ratio: 2/3, // priority_code=1 的比例

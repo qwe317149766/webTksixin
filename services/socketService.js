@@ -5,6 +5,7 @@ const TaskStore = require('../utils/taskStore');
 const BatchRequester = require('../utils/BatchRequester');
 const { sendText } = require('../tiktokWeb/TiktokApi');
 const mysqlPool = require('../config/database');
+const QuotaService = require('./quotaService');
   // 从 Redis 获取任务信息（如果 batchInfo 中没有完整信息）
 const redis = require('../config/redis');
 const BATCH_SIZE = config.task?.batchSize || 10;
@@ -25,6 +26,12 @@ function getTaskProgressKey(taskId) {
   if (!taskId) throw new Error('taskId 不能为空');
   return `${TASK_PROGRESS_PREFIX}:${taskId}`;
 }
+
+const needMoreThrottleMap = new Map(); // key -> timestamp
+const NEED_MORE_INTERVAL =
+  (config.task && typeof config.task.needMoreThrottleMs === 'number'
+    ? config.task.needMoreThrottleMs
+    : 10000);
 
 async function getTaskTotals(taskId) {
   const stats = await TaskStore.getTaskStats(taskId);
@@ -51,6 +58,23 @@ async function emitTaskProgress(socketManager, uid, taskId) {
     });
   } catch (error) {
     console.error(`[Task] 发送任务进度失败 (taskId=${taskId}):`, error.message);
+  }
+}
+
+async function finalizeTaskBill(taskId) {
+  if (!taskId) {
+    return;
+  }
+  try {
+    const stats = await TaskStore.getTaskStats(taskId);
+    if (stats.remaining <= 0) {
+      await QuotaService.completeBillByTask(taskId, stats.success || 0);
+      console.log(
+        `[Task] 已更新账单状态 (taskId=${taskId}) -> status=1, complate_num=${stats.success || 0}`
+      );
+    }
+  } catch (error) {
+    console.error(`[Task] 更新账单状态失败 (taskId=${taskId}):`, error.message);
   }
 }
 
@@ -184,6 +208,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
         const markResult = await TaskStore.markTaskSuccess(taskIdFromResult);
         if (!markResult.success) {
           console.log(`[Task] 任务 ${taskIdFromResult} 剩余数量已为 0，标记为完成`);
+          await finalizeTaskBill(taskIdFromResult);
           batchRequester.stop();
           await statusUpdater('idle', '任务队列已处理完成');
           return;
@@ -204,6 +229,9 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
         }
 
         await emitTaskProgress(socketManager, result.uid, taskIdFromResult);
+        if (markResult.remaining <= 0) {
+          await finalizeTaskBill(taskIdFromResult);
+        }
         
         // 更新任务执行次数统计（成功）
         const countKey = getTaskRequesterKey(userId, taskIdFromResult);
@@ -369,10 +397,14 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
             console.log('failResult:',failResult)
             if (!failResult.success) {
               console.log(`[Task] 任务 ${task.taskId} 剩余数量已为 0，标记为完成`);
+              await finalizeTaskBill(task.taskId);
               batchRequester.stop();
               await statusUpdater('idle', '任务队列已处理完成');
             } else {
               await emitTaskProgress(socketManager, task.userId, taskIdFromResult);
+              if (failResult.remaining <= 0) {
+                await finalizeTaskBill(task.taskId);
+              }
             }
         }
         
@@ -426,6 +458,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
       const hasPending = await TaskStore.hasPendingTasks(taskId);
       if (!hasPending && typeof statusUpdater === 'function') {
         await statusUpdater('idle', '任务队列已处理完成');
+        await finalizeTaskBill(taskId);
         // 注意：不清理 uidCookieMap，因为每个 uid 在整个系统中只能被分配一次
         // 如果清理了，其他任务可能会再次分配这个 uid，导致重复发送
         // 如果需要清理，应该在任务完全完成且确认不再需要时手动清理
@@ -572,6 +605,8 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
           await redis.zadd(queueKey, Date.now(), entry);
         }
         console.log(`[Task] 已将 ${tasks.length} 个任务重新放回队列，等待重新处理`);
+        //触发一次任务执行
+        triggerTaskProcessing(userId, taskId, tasks.length);
         // // 触发 onNeedMore 回调，让上层重新获取任务
         // if (typeof onNeedMore === 'function') {
         //   onNeedMore(tasks.length);
@@ -792,12 +827,20 @@ function createTaskProcessor(socketManager, userId, taskId, statusChecker, statu
               : 0;
             if (need > 0) {
               pendingDemand += need;
-              const emitted = socketManager.emitToUid(userId, 'task:needMore', {
-                taskId,
-                need,
-              });
-              if (!emitted) {
-                console.log(`[Task] 用户 ${userId} 当前无 socket 连接，needMore 事件仅记录`);
+              const throttleKey = `${userId}:${taskId}`;
+              const now = Date.now();
+              const lastEmit = needMoreThrottleMap.get(throttleKey) || 0;
+              if (now - lastEmit >= NEED_MORE_INTERVAL) {
+                const emitted = socketManager.emitToUid(userId, 'task:needMore', {
+                  taskId,
+                  need,
+                });
+                needMoreThrottleMap.set(throttleKey, now);
+                if (!emitted) {
+                  console.log(`[Task] 用户 ${userId} 当前无 socket 连接，needMore 事件仅记录`);
+                }
+              } else {
+                console.log(`[Task] needMore 触发过于频繁，10秒内仅允许一次 (uid=${userId}, taskId=${taskId})`);
               }
             }
           },

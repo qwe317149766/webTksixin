@@ -767,6 +767,49 @@ app.post('/api/v1/tk-task/enqueue', async (req, res) => {
   }
 });
 
+/**
+ * 账单列表
+ * GET /api/v1/bills?page=1&pageSize=20&status=&taskId=
+ */
+app.get('/api/v1/bills', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || req.headers['x-token'];
+    let token = null;
+    if (authHeader) {
+      token = authHeader.startsWith('Bearer ') ? authHeader.substring(7) : authHeader;
+    }
+    if (!token && req.query.token) {
+      token = req.query.token;
+    }
+    if (!token) {
+      return Response.error(res, '未登录', -1, null, 401);
+    }
+
+    const user = await verifyToken(token);
+    if (!user || !user.uid) {
+      return Response.error(res, 'token 无效或已过期', -1, null, 401);
+    }
+
+    const page = parseInt(req.query.page, 10) || 1;
+    const pageSize = parseInt(req.query.pageSize, 10) || 10;
+    const status = req.query.status !== undefined ? req.query.status : undefined;
+    const taskId = req.query.taskId || undefined;
+
+    const result = await QuotaService.getUserBills({
+      uid: user.uid,
+      page,
+      pageSize,
+      status,
+      taskId,
+    });
+
+    return Response.success(res, result, '查询成功', 0);
+  } catch (error) {
+    console.error('获取账单列表失败:', error);
+    return Response.error(res, error.message || '获取账单列表失败', -1, null, 500);
+  }
+});
+
 // ==================== Cookies 队列接口 ====================
 
 /**
