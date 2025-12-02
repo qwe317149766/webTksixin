@@ -859,19 +859,22 @@ app.post('/api/v1/bills/settle', async (req, res) => {
     if (!bill) {
       return Response.error(res, '未找到对应的私信账单', -1, null, 404);
     }
+    if (Number(bill.status) !== 1) {
+      return Response.error(res, '账单状态不可结算', -1, null, 400);
+    }
 
     let completedNum = Number(bill.complate_num || 0);
     let syncedFromRedis = false;
     let queueStopped = false;
 
-    if (!completedNum || forceSync) {
-      await stopTaskQueue(user.uid, taskId, 'bill_settlement');
-      queueStopped = true;
-      const stats = await TaskStore.getTaskStats(taskId);
-      completedNum = Number(stats?.success || 0);
-      syncedFromRedis = true;
-      await QuotaService.completeBillByTask(taskId, completedNum);
-    }
+    // if (!completedNum || forceSync) {
+    //   await stopTaskQueue(user.uid, taskId, 'bill_settlement');
+    //   queueStopped = true;
+    //   const stats = await TaskStore.getTaskStats(taskId);
+    //   completedNum = Number(stats?.success || 0);
+    //   syncedFromRedis = true;
+    //   await QuotaService.completeBillByTask(taskId, completedNum);
+    // }
 
     const storedPayConfig = QuotaService.parsePayConfigData(bill.pay_config);
     let config =
@@ -911,7 +914,10 @@ app.post('/api/v1/bills/settle', async (req, res) => {
       taskId,
       settlementCost,
     });
-
+    //需要判断是否成功
+    if (!releaseResult.success) {
+      return Response.error(res, releaseResult.message || '结算失败', -1, null, 400);
+    }
     const updatedPayConfig = {
       ...(storedPayConfig || {}),
       settlement: {
@@ -929,6 +935,7 @@ app.post('/api/v1/bills/settle', async (req, res) => {
     };
 
     await QuotaService.updateBillPayConfig(bill.id, updatedPayConfig);
+    await QuotaService.updateBillStatus(bill.id, 2);
 
     return Response.success(
       res,
@@ -949,7 +956,7 @@ app.post('/api/v1/bills/settle', async (req, res) => {
         frozenScoreBefore: releaseResult?.currentFrozen || frozenAmount,
         payConfig: config,
       },
-      '结算价格计算成功',
+      '结算成功',
       0
     );
   } catch (error) {

@@ -531,6 +531,16 @@ async function updateBillPayConfig(billId, config = {}) {
   );
 }
 
+async function updateBillStatus(billId, status = 1) {
+  if (!billId) return;
+  await authMysqlPool.execute(
+    `UPDATE uni_user_bill
+        SET status = ?, update_time = UNIX_TIMESTAMP()
+      WHERE id = ?`,
+    [status, billId]
+  );
+}
+
 async function releaseFrozenAndRefund({ uid, taskId, settlementCost = 0 }) {
   if (!uid) {
     throw new Error('uid 不能为空');
@@ -675,5 +685,6 @@ module.exports = {
   parsePayConfigData,
   updateBillPayConfig,
   releaseFrozenAndRefund,
+  updateBillStatus,
 };
 
