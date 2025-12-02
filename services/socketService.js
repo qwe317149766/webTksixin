@@ -541,20 +541,6 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
     // 获取数据库连接
     dbConnection = await mysqlPool.getConnection();
 
-    // 获取配置的分配比例
-    const cookieRatio = config.task?.cookieRatio || {
-      multiplier: 1.5,
-      priority1Ratio: 2/3,
-      priority0Ratio: 1/3,
-    };
-
-    // 计算需要获取的 cookies 数量
-    const totalCookiesNeeded = Math.ceil(tasks.length * cookieRatio.multiplier);
-    const priority1Count = Math.ceil(totalCookiesNeeded * cookieRatio.priority1Ratio);
-    const priority0Count = Math.ceil(totalCookiesNeeded * cookieRatio.priority0Ratio);
-
-    console.log(`[Task] 需要获取 ${totalCookiesNeeded} 个 cookies (priority_code=1: ${priority1Count}, priority_code=0: ${priority0Count})`);
-
     const allCookies = await getAlivableCookies(dbConnection, tableName, tasks.length);
 
     if (allCookies.length === 0) {
@@ -581,7 +567,6 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
           await redis.zadd(queueKey, Date.now(), entry);
         }
         console.log(`[Task] 已将 ${tasks.length} 个任务重新放回队列，等待重新处理`);
-        
         // 触发 onNeedMore 回调，让上层重新获取任务
         if (typeof onNeedMore === 'function') {
           onNeedMore(tasks.length);
@@ -776,6 +761,13 @@ function createTaskProcessor(socketManager, userId, taskId, statusChecker, statu
           // neededLength 表示需要加载的任务数量
           console.log(`[Task] 用户 ${userId} 任务 ${taskId} 需要加载 ${neededLength} 个任务`);
           shouldContinue = true;
+          const emitted = socketManager.emitToUid(userId, 'task:needMore', {
+            taskId,
+            need: neededLength,
+          });
+          if (!emitted) {
+            console.log(`[Task] 用户 ${userId} 当前无 socket 连接，needMore 事件仅记录`);
+          }
         }, statusUpdater);
       } else {
         console.log(`[Task] 用户 ${userId} 任务 ${taskId} 队列为空，等待新的触发`);
