@@ -210,7 +210,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           console.log(`[Task] 任务 ${taskIdFromResult} 剩余数量已为 0，标记为完成`);
           await finalizeTaskBill(taskIdFromResult);
           batchRequester.stop();
-          await statusUpdater('idle', '任务队列已处理完成');
+          await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
           return;
         }
         console.log(
@@ -457,7 +457,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
     try {
       const hasPending = await TaskStore.hasPendingTasks(taskId);
       if (!hasPending && typeof statusUpdater === 'function') {
-        await statusUpdater('idle', '任务队列已处理完成');
+        await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
         await finalizeTaskBill(taskId);
         // 注意：不清理 uidCookieMap，因为每个 uid 在整个系统中只能被分配一次
         // 如果清理了，其他任务可能会再次分配这个 uid，导致重复发送
@@ -823,7 +823,7 @@ function createTaskProcessor(socketManager, userId, taskId, statusChecker, statu
           console.log(`[Task] 用户 ${userId} 任务 ${taskId} 队列为空，等待新的触发`);
           const hasPending = await TaskStore.hasPendingTasks(taskId);
           if (!hasPending && typeof statusUpdater === 'function') {
-            await statusUpdater('idle', '任务队列已处理完成');
+            await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
           }
           break;
         }
@@ -916,7 +916,8 @@ function initSocketServer(httpServer) {
     // 使用 taskId 作为 key，因为同一个用户可能有多个任务
     const taskKey = `${uid}:${taskId}`;
     
-    const broadcastStatus = (status, message) => {
+    const broadcastStatus = (status, message, extraPayload = {}) => {
+      const isEnd = status === 'idle';
       const payload = { 
         isRunning: status === 'running',
         status,
@@ -928,6 +929,8 @@ function initSocketServer(httpServer) {
               ? '任务已停止'
               : '任务已完成或待命'),
         taskId,
+        is_end: isEnd,
+        ...extraPayload,
       };
       socketManager.emitToUid(uid, 'task:status', payload);
     };
@@ -1010,7 +1013,7 @@ function initSocketServer(httpServer) {
       if (!hasPending) {
         const response = { success: false, message: '任务已完成，当前无待处理队列' };
         const statusLabel = currentStatus || 'idle';
-        broadcastStatus(statusLabel, '任务队列已处理完成');
+        broadcastStatus(statusLabel, '任务队列已处理完成', { isEnd: true });
         if (typeof callback === 'function') {
           callback(response);
         }
@@ -1069,7 +1072,7 @@ function initSocketServer(httpServer) {
       if (statusValue === 'running') {
         const hasPending = await TaskStore.hasPendingTasks(taskId);
         if (!hasPending) {
-          await updateStatus('idle', '任务队列已处理完成');
+          await updateStatus('idle', '任务队列已处理完成', { isEnd: true });
           statusValue = 'idle';
           message = '任务队列已处理完成';
         }
