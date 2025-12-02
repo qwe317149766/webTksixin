@@ -20,6 +20,9 @@ try {
 const EventEmitter = require('events');
 const Log = console;
 
+const DEFAULT_USER_AGENT = 'okhttp/3.12.13.20';
+const DEFAULT_ACCEPT_ENCODING = 'gzip, deflate';
+
 const CONNECTION_POOL_CONFIG = {
     INITIAL_SIZE: 5,						//初始化5个连接	
     MAX_FAILURES_PER_CONNECTION: 100,		//每个IP最多使用100次	
@@ -39,6 +42,16 @@ class CurlHttpSdk extends EventEmitter {
         this.connectionPool = [];
         this.nextConnectionId = 0;
         this.modifyProxyUsername = true;
+        this.timeout = options.timeout ?? 30000;
+        this.connectTimeout = options.connectTimeout ?? 15000;
+        this.userAgent = options.userAgent || DEFAULT_USER_AGENT;
+        this.acceptEncoding = options.acceptEncoding || DEFAULT_ACCEPT_ENCODING;
+        this.defaultHeaders = {
+            'user-agent': this.userAgent,
+            accept: '*/*',
+            'accept-encoding': this.acceptEncoding,
+            connection: 'keep-alive',
+        };
 
         // 初始化连接池
         if (this.proxyPool.length) {
@@ -204,15 +217,21 @@ class CurlHttpSdk extends EventEmitter {
         handle.setOpt('FOLLOWLOCATION', true);
         handle.setOpt('SSL_VERIFYPEER', false);
         handle.setOpt('SSL_VERIFYHOST', false);
+        handle.setOpt('ACCEPT_ENCODING', this.acceptEncoding);
+        if (Curl.httpVersion && Curl.httpVersion.HTTP_1_1 !== undefined) {
+            handle.setOpt('HTTP_VERSION', Curl.httpVersion.HTTP_1_1);
+        }
+        handle.setOpt('CONNECTTIMEOUT_MS', this.connectTimeout);
+        handle.setOpt('TIMEOUT_MS', this.timeout);
 
         if (proxy) {
             handle.setOpt('PROXY', proxy);
             handle.setOpt('PROXYTYPE', this._parseProxy(proxy));
         }
 
-        if (headers && Object.keys(headers).length) {
-            handle.setOpt('HTTPHEADER', Object.entries(headers).map(([k, v]) => `${k}: ${v}`));
-        }
+        const mergedHeaders = { ...this.defaultHeaders, ...(headers || {}) };
+        handle.setOpt('HTTPHEADER', Object.entries(mergedHeaders).map(([k, v]) => `${k}: ${v}`));
+        handle.setOpt('USERAGENT', mergedHeaders['user-agent'] || this.userAgent);
 
 			if (body != null) {
 				if (body instanceof Uint8Array || body instanceof ArrayBuffer) {

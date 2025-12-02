@@ -257,6 +257,18 @@ node tiktokApp/scripts/compare-device-ticket-data.js \
 
 脚本会调用 Node 与 Python 两套实现并比较输出，确保编码保持完全一致。
 
+## 批量发送脚本
+
+`tiktokApp/batch-send.js` 提供简单的批量发送示例，会按顺序以多个账号向同一用户发私信。文本文件中的每一行代表一个账号，可以是 JSON 或 `key=value; key2=value2` 形式的 Cookie。
+
+```bash
+node tiktokApp/batch-send.js \
+  --cookies-file ./cookies.txt \
+  --receiver 1234567890 \
+  --message "Hello from SDK" \
+  --proxy http://127.0.0.1:8888   # 可选
+```
+
 ## 与 tiktokWeb 的对比
 
 `TiktokAppSdk` 与 `tiktokWeb/TiktokSdk` 类似，都是封装了 TikTok API 功能的 SDK，主要区别：
