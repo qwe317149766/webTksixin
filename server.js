@@ -8,11 +8,11 @@ const config = require('./config');
 const mysqlPool = require('./config/database');
 const authMysqlPool = mysqlPool.authPool;
 const redis = require('./config/redis');
-const { sendText } = require('./tiktokWeb/TiktokApi');
 const CookiesQueue = require('./utils/cookiesQueue');
 const { updateCookieStatus, getNormalCookies } = require('./utils/cookieStatusUpdater');
 const TaskStore = require('./utils/taskStore');
 const { initSocketServer, triggerTaskProcessing, stopTaskQueue } = require('./services/socketService');
+const MessageSender = require('./services/messageSender');
 const Response = require('./utils/response');
 const { verifyToken } = require('./services/authService');
 const QuotaService = require('./services/quotaService');
@@ -424,8 +424,15 @@ app.post('/api/tiktok/send-text', async (req, res) => {
       sendSequenceId: finalSendSequenceId,
     };
 
-    // 调用web  TiktokApi 的 sendText 方法
-    const result = await sendText(requestData);
+    const result = await MessageSender.sendPrivateMessage({
+      sendType: normalizedSendType,
+      receiverId: toUid,
+      textMsg,
+      cookieObject: cookieObj,
+      cookiesText,
+      proxy,
+      requestData,
+    });
 
     // 更新 used_count（使用次数+1)
     

@@ -3,7 +3,7 @@ const config = require('../config');
 const { verifyToken } = require('./authService');
 const TaskStore = require('../utils/taskStore');
 const BatchRequester = require('../utils/BatchRequester');
-const { sendText } = require('../tiktokWeb/TiktokApi');
+const MessageSender = require('./messageSender');
 const mysqlPool = require('../config/database');
 const QuotaService = require('./quotaService');
   // 从 Redis 获取任务信息（如果 batchInfo 中没有完整信息）
@@ -550,7 +550,7 @@ function parseCookieString(cookieStr) {
  }
 
 /**
- * 批量处理任务，使用 BatchRequester 执行 sendText
+ * 批量处理任务，统一封装私信发送
  * @param {SocketManager} socketManager
  * @param {Array} tasks
  * @param {string} taskId
@@ -728,18 +728,28 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
         sendSequenceId,
       };
 
-      // 使用函数模式添加任务，仅负责调用 sendText 并返回结果
+      const senderOptions = {
+        sendType,
+        receiverId: task.uid,
+        textMsg,
+        messageData: textMsg,
+        cookieObject: cookieObj,
+        cookiesText,
+        proxy: proxy || null,
+        requestData,
+      };
+
+      // 使用函数模式添加任务，封装发送实现
       batchRequester.addTask(async () => {
         try {
-          const result = await sendText(requestData);
-          // 返回结果，包含任务信息
+          const result = await MessageSender.sendPrivateMessage(senderOptions);
           return {
             ...result,
             uid: task.uid,
             batchNo: task.batchNo,
             cookieId,
             taskId,
-            task
+            task,
           };
         } catch (error) {
           return {
@@ -750,7 +760,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
             batchNo: task.batchNo,
             cookieId,
             taskId,
-            task
+            task,
           };
         }
       });

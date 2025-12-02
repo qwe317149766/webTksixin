@@ -5,6 +5,9 @@ module.exports = {
     concurrency: 10,
     lowThreshold: 50,
     needMoreThrottleMs: 10000,
+    sender: {
+      channel: 'web',
+    },
   },
   server: {
     port: 3000,
