@@ -647,7 +647,12 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
       const content = batchInfo.content || finalTaskInfo.content || [];
       const msgType = batchInfo.msgType ?? finalTaskInfo.msgType ?? 0;
       const proxy = batchInfo.proxy || finalTaskInfo.proxy || '';
-      const sendType = batchInfo.sendType ?? finalTaskInfo.sendType ?? 0;
+      const resolvedChannel = MessageSender.resolveChannel(
+        batchInfo.sendType ??
+          finalTaskInfo.sendType ??
+          config.task?.sender?.channel
+      );
+      const sendType = resolvedChannel === 'app' ? 1 : 0;
       
       // 检查该 uid（接收者）是否已经在全局范围内分配过 cookie
       const uidKey = String(task.uid);
@@ -738,7 +743,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
         proxy: proxy || null,
         requestData,
       };
-
+      console.log("senderOptions:",senderOptions)
       // 使用函数模式添加任务，封装发送实现
       batchRequester.addTask(async () => {
         try {

@@ -6,7 +6,7 @@ module.exports = {
     lowThreshold: 50,
     needMoreThrottleMs: 10000,
     sender: {
-      channel: 'web',
+      channel: 'app',
     },
   },
   server: {
