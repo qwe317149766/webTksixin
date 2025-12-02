@@ -135,6 +135,7 @@ const cookieError10001Counts = new Map(); // key: `${cookieId}` -> number
 
 // 全局任务处理器映射，用于外部触发任务处理
 const globalTaskProcessors = new Map(); // key: `${userId}:${taskId}` -> triggerFn
+let sharedSocketManager = null;
 
 function getTaskRequesterKey(userId, taskId) {
   return `${userId}:${taskId}`;
@@ -208,7 +209,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
         const markResult = await TaskStore.markTaskSuccess(taskIdFromResult);
         if (!markResult.success) {
           console.log(`[Task] 任务 ${taskIdFromResult} 剩余数量已为 0，标记为完成`);
-          await finalizeTaskBill(taskIdFromResult);
+          await stopTaskQueue(task.userId, taskIdFromResult, 'completed');
           batchRequester.stop();
           await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
           return;
@@ -230,7 +231,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
 
         await emitTaskProgress(socketManager, result.uid, taskIdFromResult);
         if (markResult.remaining <= 0) {
-          await finalizeTaskBill(taskIdFromResult);
+          await stopTaskQueue(task.userId, taskIdFromResult, 'completed');
         }
         
         // 更新任务执行次数统计（成功）
@@ -397,13 +398,13 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
             console.log('failResult:',failResult)
             if (!failResult.success) {
               console.log(`[Task] 任务 ${task.taskId} 剩余数量已为 0，标记为完成`);
-              await finalizeTaskBill(task.taskId);
+              await stopTaskQueue(task.userId, task.taskId, 'completed');
               batchRequester.stop();
-              await statusUpdater('idle', '任务队列已处理完成');
+              await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
             } else {
               await emitTaskProgress(socketManager, task.userId, taskIdFromResult);
               if (failResult.remaining <= 0) {
-                await finalizeTaskBill(task.taskId);
+                await stopTaskQueue(task.userId, task.taskId, 'completed');
               }
             }
         }
@@ -458,7 +459,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
       const hasPending = await TaskStore.hasPendingTasks(taskId);
       if (!hasPending && typeof statusUpdater === 'function') {
         await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
-        await finalizeTaskBill(taskId);
+        await stopTaskQueue(userId, taskId, 'completed');
         // 注意：不清理 uidCookieMap，因为每个 uid 在整个系统中只能被分配一次
         // 如果清理了，其他任务可能会再次分配这个 uid，导致重复发送
         // 如果需要清理，应该在任务完全完成且确认不再需要时手动清理
@@ -901,6 +902,7 @@ function initSocketServer(httpServer) {
   });
 
   const socketManager = new SocketManager(io);
+  sharedSocketManager = socketManager;
   const userTaskProcessors = new Map();
   // 用户任务状态管理：uid -> { isRunning: boolean, triggerFn: function }
   const userTaskStatus = new Map();
@@ -1038,14 +1040,14 @@ function initSocketServer(httpServer) {
       
       if (!taskStatus.isRunning) {
         const response = { success: false, message: '任务已停止' };
-        broadcastStatus(taskStatus.status || 'stopped', '任务已停止');
+        broadcastStatus(taskStatus.status || 'stopped', '任务已停止', { isEnd: true });
         if (typeof callback === 'function') {
           callback(response);
         }
         return;
       }
 
-      await updateStatus('stopped', '任务已停止', { stoppedBy: uid });
+      await updateStatus('stopped', '任务已停止', { stoppedBy: uid, isEnd: true });
       await stopTaskQueue(uid, taskId, 'manual_stop');
       
       const response = { success: true, message: '任务已停止' };
@@ -1153,6 +1155,17 @@ async function stopTaskQueue(userId, taskId, reason = 'manual') {
   }
 
   await finalizeTaskBill(taskId, { force: true });
+
+  if (sharedSocketManager && userId) {
+    sharedSocketManager.emitToUid(userId, 'task:status', {
+      isRunning: false,
+      status: 'stopped',
+      message: '任务已停止',
+      taskId,
+      is_end: true,
+      reason,
+    });
+  }
 
   return { stopped: true };
 }
