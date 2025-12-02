@@ -12,7 +12,7 @@ const { sendText } = require('./tiktokWeb/TiktokApi');
 const CookiesQueue = require('./utils/cookiesQueue');
 const { updateCookieStatus, getNormalCookies } = require('./utils/cookieStatusUpdater');
 const TaskStore = require('./utils/taskStore');
-const { initSocketServer, triggerTaskProcessing } = require('./services/socketService');
+const { initSocketServer, triggerTaskProcessing, stopTaskQueue } = require('./services/socketService');
 const Response = require('./utils/response');
 const { verifyToken } = require('./services/authService');
 const QuotaService = require('./services/quotaService');
@@ -807,6 +807,154 @@ app.get('/api/v1/bills', async (req, res) => {
   } catch (error) {
     console.error('获取账单列表失败:', error);
     return Response.error(res, error.message || '获取账单列表失败', -1, null, 500);
+  }
+});
+
+/**
+ * 私信账单结算
+ * POST /api/v1/bills/settle
+ * body: { taskId, forceSync }
+ */
+app.post('/api/v1/bills/settle', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || req.headers['x-token'];
+    let token = null;
+    if (authHeader) {
+      token = authHeader.startsWith('Bearer ') ? authHeader.substring(7) : authHeader;
+    }
+    if (!token && req.body?.token) {
+      token = req.body.token;
+    }
+    if (!token && req.query?.token) {
+      token = req.query.token;
+    }
+    if (!token) {
+      return Response.error(res, '未登录', -1, null, 401);
+    }
+
+    const user = await verifyToken(token);
+    if (!user || !user.uid) {
+      return Response.error(res, 'token 无效或已过期', -1, null, 401);
+    }
+
+    const rawTaskId =
+      req.body?.taskId !== undefined
+        ? req.body.taskId
+        : req.query?.taskId !== undefined
+          ? req.query.taskId
+          : '';
+    const taskId = String(rawTaskId || '').trim();
+    const forceSyncFlag = req.body?.forceSync ?? req.query?.forceSync;
+    const forceSync =
+      forceSyncFlag === true ||
+      forceSyncFlag === 'true' ||
+      forceSyncFlag === 1 ||
+      forceSyncFlag === '1';
+
+    if (!taskId) {
+      return Response.error(res, 'taskId 不能为空', -1, null, 400);
+    }
+
+    const bill = await QuotaService.getBillByTask(user.uid, taskId);
+    if (!bill) {
+      return Response.error(res, '未找到对应的私信账单', -1, null, 404);
+    }
+
+    let completedNum = Number(bill.complate_num || 0);
+    let syncedFromRedis = false;
+    let queueStopped = false;
+
+    if (!completedNum || forceSync) {
+      await stopTaskQueue(user.uid, taskId, 'bill_settlement');
+      queueStopped = true;
+      const stats = await TaskStore.getTaskStats(taskId);
+      completedNum = Number(stats?.success || 0);
+      syncedFromRedis = true;
+      await QuotaService.completeBillByTask(taskId, completedNum);
+    }
+
+    const storedPayConfig = QuotaService.parsePayConfigData(bill.pay_config);
+    let config =
+      (storedPayConfig && (storedPayConfig.config || storedPayConfig)) ||
+      (await QuotaService.getPayConfigFromDB(user.uid));
+
+    if (!config) {
+      return Response.error(res, '无法获取 payConfig 配置', -1, null, 500);
+    }
+
+    const unitSixin = Number(config.unit_sixin) || 1;
+    const sixinPrice = Number(config.sixin_price) || 0;
+    const unitProxy = Number(config.unit_proxy) || 0;
+    const proxyPrice = Number(config.proxy_price) || 0;
+
+    const normalizeAmount = (value) =>
+      Number(Number(value || 0).toFixed(4));
+
+    const rawSendCost =
+      unitSixin > 0 ? (completedNum / unitSixin) * sixinPrice : completedNum * sixinPrice;
+    const rawProxyCost =
+      unitProxy > 0 ? (completedNum / unitProxy) * proxyPrice : 0;
+
+    const sendCost = normalizeAmount(rawSendCost);
+    const proxyCost = normalizeAmount(rawProxyCost);
+    const settlementCost = normalizeAmount(rawSendCost + rawProxyCost);
+
+    const frozenAmount = normalizeAmount(
+      bill.num !== undefined && bill.num !== null
+        ? bill.num
+        : storedPayConfig?.totalCost || settlementCost
+    );
+    const previewRefund = normalizeAmount(Math.max(0, frozenAmount - settlementCost));
+
+    const releaseResult = await QuotaService.releaseFrozenAndRefund({
+      uid: user.uid,
+      taskId,
+      settlementCost,
+    });
+
+    const updatedPayConfig = {
+      ...(storedPayConfig || {}),
+      settlement: {
+        completedNum,
+        sendCost,
+        proxyCost,
+        settlementCost,
+        frozenAmount,
+        previewRefund,
+        actualRefund: releaseResult?.refundAmount || 0,
+        syncedFromRedis,
+        calculatedAt: Date.now(),
+      },
+      config,
+    };
+
+    await QuotaService.updateBillPayConfig(bill.id, updatedPayConfig);
+
+    return Response.success(
+      res,
+      {
+        taskId,
+        billId: bill.id,
+        completedNum,
+        queueStopped,
+        syncedFromRedis,
+        settlement: {
+          sendCost,
+          proxyCost,
+          settlementCost,
+        },
+        frozenAmount,
+        refundable: settlementCost,
+        refundAmount: releaseResult?.refundAmount || 0,
+        frozenScoreBefore: releaseResult?.currentFrozen || frozenAmount,
+        payConfig: config,
+      },
+      '结算价格计算成功',
+      0
+    );
+  } catch (error) {
+    console.error('私信结算失败:', error);
+    return Response.error(res, error.message || '私信结算失败', -1, null, 500);
   }
 });
 

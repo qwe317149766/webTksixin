@@ -3,11 +3,80 @@ const redis = require('../config/redis');
 const { authRedis } = redis;
 // 使用远程 MySQL（authPool）读取账户余额
 const { authPool: authMysqlPool } = require('../config/database');
+const GuidUtil = require('../utils/guid');
 
 const QUOTA_KEY = 'user:score';
 const QUOTA_CONFIG_KEY = 'pay:config';
 const QUOTA_TABLE = 'uni_system_admin'; // 用户表名，可根据实际情况修改
 const QUOTA_COLUMN = 'score_num'; // 余额字段名，可根据实际情况修改
+
+function buildBillOrderId(prefix = 'bill') {
+  return `${prefix}_${GuidUtil.generate()}`;
+}
+
+async function insertBillRecord(connection, {
+  billType = 'sixin',
+  billCategory = 'adjust',
+  billTitle = '',
+  billMark = '',
+  taskId = '',
+  amount = 0,
+  pm = 1,
+  uid,
+  beforeScore = 0,
+  afterScore = 0,
+  buyNum = 0,
+  payConfig = {},
+  status = 1,
+}) {
+  if (!uid) {
+    throw new Error('insertBillRecord 需要 uid');
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const payload =
+    typeof payConfig === 'string' ? payConfig : JSON.stringify(payConfig || {});
+  await connection.execute(
+    `INSERT INTO uni_user_bill (
+        bill_type,
+        bill_mark,
+        bill_title,
+        bill_category,
+        taskId,
+        num,
+        pm,
+        uid,
+        before_num,
+        after_num,
+        bill_order_id,
+        buy_num,
+        pay_config,
+        complate_num,
+        status,
+        create_time,
+        update_time
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      billType,
+      billMark,
+      billTitle,
+      billCategory,
+      taskId || '',
+      amount,
+      pm,
+      uid,
+      beforeScore,
+      afterScore,
+      buildBillOrderId(taskId || 'bill'),
+      buyNum,
+      payload,
+      0,
+      status,
+      now,
+      now,
+    ]
+  );
+}
 
 /**
  * 从 Redis 获取余额
@@ -172,100 +241,60 @@ async function deductQuotaAtomic(uid, amount = 1) {
     };
   }
 
-  // Lua 脚本：原子性扣减余额
-  // 1. 获取当前余额
-  // 2. 检查余额是否足够
-  // 3. 如果足够，扣减并返回新余额
-  // 4. 如果不足，返回当前余额和错误信息
-  const luaScript = `
-    local key = KEYS[1]
-    local field = ARGV[1]
-    local amount = tonumber(ARGV[2])
-    
-    -- 获取当前余额
-    local current = redis.call('HGET', key, field)
-    if current == false then
-      -- 如果 Redis 中没有，尝试从数据库加载（这里先返回0，由上层处理）
-      return {0, 0, 'not_found'}
-    end
-    
-    current = tonumber(current) or 0
-    
-    -- 检查余额是否足够
-    if current < amount then
-      return {0, current, 'insufficient'}
-    end
-    
-    -- 扣减余额
-    local newQuota = redis.call('HINCRBY', key, field, -amount)
-    return {1, newQuota, 'success'}
-  `;
-
+  let connection;
   try {
-    // 使用鉴权 Redis 执行 Lua 脚本
-    const result = await authRedis.eval(
-      luaScript,
-      1, // KEYS 数量
-      QUOTA_KEY, // KEYS[1]
-      uid, // ARGV[1]
-      amount.toString() // ARGV[2]
+    connection = await authMysqlPool.getConnection();
+    await connection.beginTransaction();
+
+    const [rows] = await connection.execute(
+      `SELECT ${QUOTA_COLUMN} FROM ${QUOTA_TABLE} WHERE id = ? FOR UPDATE`,
+      [uid]
     );
 
-    const [success, quota, status] = result;
-
-    if (status === 'not_found') {
-      // 鉴权 Redis 中没有余额，尝试从数据库加载
-      const dbQuota = await getQuotaFromDB(uid);
-      if (dbQuota > 0) {
-        // 同步到鉴权 Redis
-        await authRedis.hset(QUOTA_KEY, uid, dbQuota);
-        
-        // 再次尝试扣减
-        if (dbQuota >= amount) {
-          const finalQuota = await authRedis.hincrby(QUOTA_KEY, uid, -amount);
-          return {
-            success: true,
-            quota: finalQuota,
-          };
-        } else {
-          return {
-            success: false,
-            quota: dbQuota,
-            message: '余额不足',
-          };
-        }
-      } else {
-        return {
-          success: false,
-          quota: 0,
-          message: '余额不存在',
-        };
-      }
+    if (!rows.length) {
+      await connection.rollback();
+      return { success: false, quota: 0, message: '用户不存在' };
     }
 
-    if (success === 1) {
-      return {
-        success: true,
-        quota: Number(quota),
-      };
-    } else {
-      return {
-        success: false,
-        quota: Number(quota),
-        message: status === 'insufficient' ? '余额不足' : '扣减失败',
-      };
+    const currentScore = Number(rows[0][QUOTA_COLUMN] || 0);
+    if (currentScore < amount) {
+      await connection.rollback();
+      return { success: false, quota: currentScore, message: '余额不足' };
     }
+
+    const [updateResult] = await connection.execute(
+      `UPDATE ${QUOTA_TABLE}
+          SET ${QUOTA_COLUMN} = ${QUOTA_COLUMN} - ?, 
+              update_time = UNIX_TIMESTAMP()
+        WHERE id = ? AND ${QUOTA_COLUMN} - ? >= 0`,
+      [amount, uid, amount]
+    );
+    if (updateResult.affectedRows === 0) {
+      await connection.rollback();
+      return { success: false, quota: currentScore, message: '余额不足或并发冲突' };
+    }
+
+    const newScore = currentScore - amount;
+    await connection.commit();
+    await authRedis.hset(QUOTA_KEY, uid, newScore);
+
+    return { success: true, quota: newScore };
   } catch (error) {
-    console.error(`[Quota] 原子性扣减失败 (UID: ${uid}, Amount: ${amount}):`, error.message);
+    if (connection) {
+      await connection.rollback();
+    }
+    console.error(`[Quota] 余额扣减失败 (UID: ${uid}, Amount: ${amount}):`, error.message);
     return {
       success: false,
       quota: 0,
       message: `扣减失败: ${error.message}`,
     };
+  } finally {
+    if (connection) {
+      connection.release();
+    }
   }
 }
-
-
 
 async function addQuota(uid, amount = 1) {
   // 使用鉴权 Redis 增加余额
@@ -435,6 +464,160 @@ async function completeBillByTask(taskId, completedNum = 0) {
     console.error(`[Quota] 更新账单完成状态失败 (taskId=${taskId}):`, error.message);
   }
 }
+
+async function getBillByTask(uid, taskId) {
+  if (!uid || !taskId) {
+    return null;
+  }
+
+  const [rows] = await authMysqlPool.execute(
+    `SELECT id,
+            uid,
+            taskId,
+            bill_type,
+            bill_category,
+            num,
+            pm,
+            bill_mark,
+            bill_title,
+            buy_num,
+            pay_config,
+            complate_num,
+            status,
+            create_time,
+            update_time
+       FROM uni_user_bill
+      WHERE uid = ?
+        AND taskId = ?
+        AND bill_type = 'sixin'
+        AND bill_category = 'frozen'
+      LIMIT 1`,
+    [uid, taskId]
+  );
+
+  return rows[0] || null;
+}
+
+function parsePayConfigData(raw) {
+  if (!raw) {
+    return null;
+  }
+
+  if (typeof raw === 'object') {
+    return raw;
+  }
+
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      console.warn('[Quota] 解析 pay_config 失败:', error.message);
+      return null;
+    }
+  }
+
+  return null;
+}
+
+async function updateBillPayConfig(billId, config = {}) {
+  if (!billId) return;
+  const payload =
+    typeof config === 'string' ? config : JSON.stringify(config || {});
+  await authMysqlPool.execute(
+    `UPDATE uni_user_bill
+        SET pay_config = ?, update_time = UNIX_TIMESTAMP()
+      WHERE id = ?`,
+    [payload, billId]
+  );
+}
+
+async function releaseFrozenAndRefund({ uid, taskId, settlementCost = 0 }) {
+  if (!uid) {
+    throw new Error('uid 不能为空');
+  }
+
+  let connection;
+  try {
+    connection = await authMysqlPool.getConnection();
+    await connection.beginTransaction();
+
+    const [rows] = await connection.execute(
+      `SELECT ${QUOTA_COLUMN}, frozen_score_num FROM ${QUOTA_TABLE} WHERE id = ? FOR UPDATE`,
+      [uid]
+    );
+
+    if (!rows.length) {
+      throw new Error('用户不存在');
+    }
+
+    const currentScore = Number(rows[0][QUOTA_COLUMN] || 0);
+    const currentFrozen = Number(rows[0].frozen_score_num || 0);
+    const normalizedSettlement = Math.max(0, Number(settlementCost) || 0);
+    const usedFrozen = Math.min(currentFrozen, normalizedSettlement);
+    const refundAmount = Math.max(0, currentFrozen - normalizedSettlement);
+    const [updateResult] = await connection.execute(
+      `UPDATE ${QUOTA_TABLE}
+         SET ${QUOTA_COLUMN} = ${QUOTA_COLUMN} + ?,
+             frozen_score_num = GREATEST(frozen_score_num - ?, 0),
+             update_time = UNIX_TIMESTAMP()
+       WHERE id = ?`,
+      [refundAmount, currentFrozen, uid]
+    );
+    if (updateResult.affectedRows === 0) {
+      throw new Error('更新余额失败');
+    }
+
+    const newScore = currentScore + refundAmount;
+    if (refundAmount > 0) {
+      await insertBillRecord(connection, {
+        billType: 'sixin',
+        billCategory: 'refund',
+        billTitle: '私信失败退回',
+        billMark: `任务 ${taskId || ''} 未使用退回`,
+        taskId,
+        amount: refundAmount,
+        pm: 1,
+        uid,
+        beforeScore: currentScore,
+        afterScore: newScore,
+      });
+    }
+
+    if (currentFrozen > 0) {
+      await insertBillRecord(connection, {
+        billType: 'score',
+        billCategory: 'unfreeze',
+        billTitle: '积分解冻',
+        billMark: `任务 ${taskId || ''} 结算完成，解冻冻结积分`,
+        taskId,
+        amount: currentFrozen,
+        pm: 0,
+        uid,
+        beforeScore: newScore,
+        afterScore: newScore,
+      });
+    }
+
+    await connection.commit();
+    await authRedis.hset(QUOTA_KEY, uid, newScore);
+
+    return {
+      currentFrozen,
+      usedFrozen,
+      refundAmount,
+      newScore,
+    };
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
+    throw error;
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+}
 async function getUserBills({ uid, page = 1, pageSize = 10, status, taskId }) {
   if (!uid) {
     throw new Error('uid 不能为空');
@@ -488,5 +671,9 @@ module.exports = {
   deductFreezeAndCreateBill, // 扣减、冻结并生成账单（组合操作）
   getUserBills,
   completeBillByTask,
+  getBillByTask,
+  parsePayConfigData,
+  updateBillPayConfig,
+  releaseFrozenAndRefund,
 };
 

@@ -1109,8 +1109,35 @@ function triggerTaskProcessing(userId, taskId, demand = 1) {
   }
 }
 
+async function stopTaskQueue(userId, taskId, reason = 'manual') {
+  if (!taskId) {
+    return { stopped: false, message: 'taskId 不能为空' };
+  }
+
+  try {
+    await TaskStore.setTaskStatus(taskId, 'stopped', {
+      userId: userId || '',
+      reason: reason || 'manual',
+    });
+  } catch (error) {
+    console.error(`[Task] 设置任务状态为 stopped 失败 (taskId=${taskId}):`, error.message);
+  }
+
+  if (userId) {
+    const taskKey = getTaskRequesterKey(userId, taskId);
+    const requester = taskRequesters.get(taskKey);
+    if (requester) {
+      requester.stop();
+      console.log(`[Task] BatchRequester 已停止 (uid=${userId}, taskId=${taskId})`);
+    }
+  }
+
+  return { stopped: true };
+}
+
 module.exports = {
   initSocketServer,
   triggerTaskProcessing,
+  stopTaskQueue,
 };
 
