@@ -508,7 +508,7 @@ class TikTokService {
         'os_version': '15',
         'ac': 'wifi',
         'is_pad': '0',
-        'current_region': 'US',
+        "carrier_region": "TW",
         'app_type': 'normal',
         'sys_region': 'US',
         'last_install_time': '1758618230',
@@ -517,12 +517,12 @@ class TikTokService {
         'app_language': 'en',
         'ac2': 'wifi',
         'uoo': '0',
-        'op_region': 'US',
+        'op_region': 'TW',
         'timezone_offset': '-18000',
         'build_number': '40.6.3',
         'host_abi': 'arm64-v8a',
         'locale': 'en',
-        'region': 'US',
+        "op_region": "TW",
         'ts': String(stime - randomOffset),
         'iid': String(iid),
         'device_id': String(actualDeviceId)
@@ -626,13 +626,13 @@ class TikTokService {
         'X-Tt-Token': cookies['X-Tt-Token'] || cookies['x_tt_token'] || '',
         'tt-ticket-guard-version': '3',
         'passport-sdk-version': '-1',
-        'rpc-persist-pns-region-1': 'US|6252001|5332921',
-        'rpc-persist-pns-region-2': 'US|6252001|5332921',
-        'rpc-persist-pns-region-3': 'US|6252001|5332921',
+        "rpc-persist-pns-region-1": "TW|1668284",
+        "rpc-persist-pns-region-2": "TW|1668284",
+        "rpc-persist-pns-region-3": "TW|1668284",
         'x-vc-bdturing-sdk-version': '2.3.13.i18n',
         'oec-vc-sdk-version': '3.0.12.i18n',
         'x-tt-request-tag': 'n=0;nr=111;bg=0',
-        'x-tt-store-region': cookies['store-country-code'] || cookies['store_country_code'] || 'us',
+        'x-tt-store-region': cookies['store-country-code'] || cookies['store_country_code'] || 'kr',
         'x-tt-store-region-src': cookies['store-country-code-src'] || cookies['store_country_code_src'] || 'uid',
         'User-Agent': cookies['User-Agent'] || cookies['user_agent'] || 'okhttp/3.12.13.20',
         'Content-Type': 'application/x-protobuf',
@@ -640,14 +640,14 @@ class TikTokService {
         'Host': conversationHost,
         'Cookie': this.buildCookieString(cookies)
       };
-      
-      const url = `${conversationBaseUrl}/v2/conversation/create`;
+      console.log('requestHeaders:',requestHeaders)
+      const url = `${conversationBaseUrl}/v2/conversation/create?`+finalQueryString;
       console.log('url:',url)
       const client = this.getHttpClient(proxyUrl);
       
       const response = await client.post(url, postDataBuffer, {
         headers: requestHeaders,
-        params: params,
+        // params: params,
         responseType: 'arraybuffer'
       });
       
@@ -745,13 +745,13 @@ class TikTokService {
    */
   static buildCookieString(cookies) {
     const cookieParts = [
-      `store-idc=useast5`,
-      `store-country-code=${cookies['store-country-code'] || 'us'}`,
+      `store-idc=${cookies['store-idc'] || ''}`,
+      `store-country-code=${cookies['store-country-code'] || ''}`,
       `install_id=${cookies.install_id}`,
       `ttreq=${cookies.ttreq}`,
       `passport_csrf_token=${cookies.passport_csrf_token}`,
       `passport_csrf_token_default=${cookies.passport_csrf_token}`,
-      `store-country-code-src=uid`,
+      `store-country-code-src=${cookies['store-country-code-src'] || ''}`,
       `multi_sids=${cookies.multi_sids}`,
       `cmpl_token=${cookies.cmpl_token}`,
       `d_ticket=${cookies.d_ticket}`,
@@ -762,7 +762,7 @@ class TikTokService {
       `sessionid=${cookies.sessionid}`,
       `sessionid_ss=${cookies.sessionid}`,
       `tt_session_tlb_tag=${cookies['tt_session_tlb_tag'] || 'sttt%7C5%7CDQp2JeFvbsRVd066xKPLJP________-5NWxRwFjRS8rZNh5mBfI6XbTiVUUkftEYH0ToFGFa3-c%3D'}`,
-      `tt-target-idc=${cookies['tt-target-idc'] || 'useast5'}`,
+      `tt-target-idc=${cookies['tt-target-idc']}`,
       `tt_ticket_guard_has_set_public_key=1`, 
       `store-country-sign=${cookies['store-country-sign'] || cookies.store_country_sign}`,
       `msToken=${cookies.msToken || cookies.ms_token}`,
@@ -829,16 +829,16 @@ class TikTokService {
         'os_version': '15',
         'ac': 'wifi',
         'is_pad': '0',
-        'current_region': 'US',
+        'current_region': 'TW',
         'app_type': 'normal',
         'sys_region': 'US',
         'last_install_time': '1758618230',
         'timezone_name': 'America/New_York',
-        'residence': 'US',
+        'residence': 'TW',
         'app_language': 'en',
         'ac2': 'wifi',
         'uoo': '0',
-        'op_region': 'US',
+        'op_region': 'TW',
         'timezone_offset': '-18000',
         'build_number': '40.6.3',
         'host_abi': 'arm64-v8a',
