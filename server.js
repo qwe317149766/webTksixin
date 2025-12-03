@@ -415,20 +415,20 @@ app.post('/api/tiktok/send-text', async (req, res) => {
     let records;
     try {
       [records] = await dbConnection.execute(
-        `SELECT id, cookies_text, ck_uid, used_count 
+        `SELECT id, cookies_text, ck_uid, used_count, day_count 
          FROM ${tableName} 
-         WHERE status = 1 
-         ORDER BY used_count ASC, update_time DESC 
+         WHERE status = 1 AND day_count < 100
+         ORDER BY day_count ASC
          LIMIT 1`
       );
     } catch (error) {
       if (error.code === 'ER_NO_SUCH_TABLE' && tableName !== 'uni_cookies_0') {
         tableName = 'uni_cookies_0';
         [records] = await dbConnection.execute(
-          `SELECT id, cookies_text, ck_uid, used_count 
+          `SELECT id, cookies_text, ck_uid, used_count, day_count 
            FROM ${tableName} 
-           WHERE status = 1 
-           ORDER BY used_count ASC, update_time DESC 
+           WHERE status = 1 AND day_count < 100
+           ORDER BY day_count ASC
            LIMIT 1`
         );
       } else {
@@ -488,10 +488,10 @@ app.post('/api/tiktok/send-text', async (req, res) => {
     // 更新 used_count（使用次数+1)
     
     try {
-      await dbConnection.execute(
-        `UPDATE ${tableName} SET used_count = used_count + 1, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
-        [cookieId]
-      );
+        await dbConnection.execute(
+          `UPDATE ${tableName} SET used_count = used_count + 1, day_count = day_count + 1, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
+          [cookieId]
+        );
     } catch (updateError) {
       console.error(`[API] 更新 Cookie 使用次数失败 (ID: ${cookieId}):`, updateError.message);
       // 使用次数更新失败不影响主流程

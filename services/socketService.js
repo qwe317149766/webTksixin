@@ -262,7 +262,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
         if (cookieId) {
           try {
             await dbConnection.execute(
-              `UPDATE ${tableName} SET used_count = used_count + 1, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
+              `UPDATE ${tableName} SET used_count = used_count + 1, day_count = day_count + 1, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
               [cookieId]
             );
           } catch (updateError) {
@@ -305,8 +305,6 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
         }
       } else {
        
-      
-      
         // 不同错误码更新 Cookie 状态
         let shouldRequeue = false;
         let tongJs = true
@@ -588,7 +586,7 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum) {
       priority0Ratio: 1/3,
     };
 
-  const whereParts = ['status = 1'];
+  const whereParts = ['status = 1', 'day_count < 100'];
   const whereParams = [];
 
   const whereClause = whereParts.join(' AND ');
@@ -602,20 +600,20 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum) {
 
     // 从数据库获取 priority_code=1 的 cookies
     const [priority1Cookies] = await dbConnection.execute(
-      `SELECT id, cookies_text, ck_uid, used_count 
+      `SELECT id, cookies_text, ck_uid, used_count, day_count 
        FROM ${tableName} 
      WHERE ${whereClause} AND priority_code = 1
-       ORDER BY used_count ASC, update_time DESC 
+       ORDER BY day_count ASC
        LIMIT ?`,
     [...whereParams, priority1Count]
     );
 
     // 从数据库获取 priority_code=0 的 cookies
     const [priority0Cookies] = await dbConnection.execute(
-      `SELECT id, cookies_text, ck_uid, used_count 
+      `SELECT id, cookies_text, ck_uid, used_count, day_count 
        FROM ${tableName} 
      WHERE ${whereClause} AND priority_code = 0
-       ORDER BY used_count ASC, update_time DESC 
+       ORDER BY day_count ASC
        LIMIT ?`,
     [...whereParams, priority0Count]
     );

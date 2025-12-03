@@ -279,23 +279,33 @@ async function ensureTableExists(connection, tableName) {
       // 创建表
       await connection.execute(`
         CREATE TABLE IF NOT EXISTS \`${tableName}\` (
-          \`id\` int(11) NOT NULL AUTO_INCREMENT,
+          \`id\` int(11) unsigned NOT NULL AUTO_INCREMENT,
           \`cookies_text\` varchar(6000) NOT NULL DEFAULT '' COMMENT 'cookies',
           \`ck_uid\` bigint(18) NOT NULL DEFAULT '0' COMMENT 'ck的uid',
-          \`status\` tinyint(1) NOT NULL DEFAULT '0' COMMENT '账号状态{radio}(0:待检测,1:已检测,3:已封禁,4:维护社区,5:发送太快)',
-          \`used_count\` int(11) NOT NULL DEFAULT '0' COMMENT '已使用次数',
-          \`store_country_code\` varchar(10) NOT NULL DEFAULT '' COMMENT 'store-country-code',
+          \`status\` tinyint(1) NOT NULL DEFAULT '0' COMMENT '账号状态{radio}(0:待检测,1:已检测,2:已风控,3:已退出,4:已封禁,5:维护社区,6:发送太快)',
+          \`used_count\` int(11) NOT NULL DEFAULT '0' COMMENT '总使用次数',
+          \`day_count\` int(11) NOT NULL DEFAULT '0' COMMENT '当前使用次数',
           \`priority_code\` tinyint(1) NOT NULL DEFAULT '0' COMMENT '使用优先级',
           \`create_time\` int(11) NOT NULL DEFAULT '0' COMMENT '创建时间',
           \`update_time\` int(11) NOT NULL DEFAULT '0' COMMENT '更新时间',
-          PRIMARY KEY (\`id\`)
+          \`job_status\` tinyint(1) NOT NULL DEFAULT '0' COMMENT '脚本状态{radio}(0:待使用,1:使用中)',
+          \`store_country_code\` varchar(100) NOT NULL DEFAULT '' COMMENT '国家代码',
+          \`error_count\` int(11) NOT NULL DEFAULT '0' COMMENT '脚本执行错误次数',
+          PRIMARY KEY (\`id\`) USING BTREE,
+          KEY \`idx_job_status\` (\`job_status\`) USING BTREE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
       `);
       
       console.log(`✅ 表 ${tableName} 创建成功`);
     } else {
       console.log(`✅ 表 ${tableName} 已存在`);
-      await ensureColumnExists(connection, tableName, 'store_country_code', "ALTER TABLE `" + tableName + "` ADD COLUMN `store_country_code` varchar(10) NOT NULL DEFAULT '' COMMENT 'store-country-code' AFTER `used_count`");
+      await ensureColumnExists(connection, tableName, 'day_count', `ALTER TABLE \`${tableName}\` ADD COLUMN \`day_count\` int(11) NOT NULL DEFAULT '0' COMMENT '当前使用次数' AFTER \`used_count\``);
+      await ensureColumnExists(connection, tableName, 'job_status', `ALTER TABLE \`${tableName}\` ADD COLUMN \`job_status\` tinyint(1) NOT NULL DEFAULT '0' COMMENT '脚本状态{radio}(0:待使用,1:使用中)' AFTER \`update_time\``);
+      await ensureColumnExists(connection, tableName, 'store_country_code', `ALTER TABLE \`${tableName}\` ADD COLUMN \`store_country_code\` varchar(100) NOT NULL DEFAULT '' COMMENT '国家代码' AFTER \`job_status\``);
+      await ensureColumnExists(connection, tableName, 'error_count', `ALTER TABLE \`${tableName}\` ADD COLUMN \`error_count\` int(11) NOT NULL DEFAULT '0' COMMENT '脚本执行错误次数' AFTER \`store_country_code\``);
+      await ensureIndexExists(connection, tableName, 'idx_job_status', `ALTER TABLE \`${tableName}\` ADD KEY \`idx_job_status\` (\`job_status\`) USING BTREE`);
+      await ensureColumnDefinition(connection, tableName, 'status', `ALTER TABLE \`${tableName}\` MODIFY COLUMN \`status\` tinyint(1) NOT NULL DEFAULT '0' COMMENT '账号状态{radio}(0:待检测,1:已检测,2:已风控,3:已退出,4:已封禁,5:维护社区,6:发送太快)'`);
+      await ensureColumnDefinition(connection, tableName, 'store_country_code', `ALTER TABLE \`${tableName}\` MODIFY COLUMN \`store_country_code\` varchar(100) NOT NULL DEFAULT '' COMMENT '国家代码'`);
     }
   } catch (error) {
     console.error(`❌ 检查/创建表失败: ${error.message}`);
@@ -313,6 +323,30 @@ async function ensureColumnExists(connection, tableName, columnName, alterSql) {
     console.log(`ℹ️  表 ${tableName} 缺少字段 ${columnName}，正在补充...`);
     await connection.execute(alterSql);
     console.log(`✅ 字段 ${columnName} 添加成功`);
+  }
+}
+
+// 确保索引存在
+async function ensureIndexExists(connection, tableName, indexName, alterSql) {
+  const [indexes] = await connection.execute(
+    `SELECT COUNT(1) AS count FROM information_schema.statistics WHERE table_schema = ? AND table_name = ? AND index_name = ?`,
+    [config.mysql.database, tableName, indexName]
+  );
+  if (indexes[0].count === 0) {
+    console.log(`ℹ️  表 ${tableName} 缺少索引 ${indexName}，正在补充...`);
+    await connection.execute(alterSql);
+    console.log(`✅ 索引 ${indexName} 添加成功`);
+  }
+}
+
+// 调整现有字段定义
+async function ensureColumnDefinition(connection, tableName, columnName, alterSql) {
+  try {
+    await connection.execute(alterSql);
+    console.log(`✅ 字段 ${columnName} 定义已同步`);
+  } catch (error) {
+    // 如果数据库不支持重复修改，忽略错误
+    console.warn(`⚠️  同步字段 ${columnName} 失败: ${error.message}`);
   }
 }
 
