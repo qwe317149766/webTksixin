@@ -309,4 +309,14 @@ if (require.main === module) {
 		}
 	})()
 }
-module.exports = { CurlHttpSdk };
+let sharedInstance = null;
+
+function getCurlHttpSdkInstance(options = {}) {
+	if (sharedInstance) {
+		return sharedInstance;
+	}
+	sharedInstance = new CurlHttpSdk(options);
+	return sharedInstance;
+}
+
+module.exports = { CurlHttpSdk, getCurlHttpSdkInstance };

@@ -49,12 +49,13 @@ async function sendViaApp({ receiverId, messageData, cookieData, proxy }) {
   if (!cookieData || Object.keys(cookieData).length === 0) {
     throw new Error('App 发送需要有效的 cookie 数据');
   }
-  return sdk.sendMessage({
+  const sendData = {
     receiverId,
     messageData,
     cookieData,
     proxyConfig: proxy || null,
-  });
+  }
+  return sdk.sendMessage(sendData);
 }
 
 async function sendPrivateMessage(options = {}) {

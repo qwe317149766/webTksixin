@@ -413,56 +413,44 @@ class TikTokService {
    */
   static getHttpClient(proxyUrl, proxyUid = null) {
     if (!this._curlClients) {
-      this._curlClients = new Map();
-    }
-
-    const key = `${proxyUrl || 'default'}:${proxyUid || 'anon'}`;
-    if (!this._curlClients.has(key)) {
-      const sdk = new CurlHttpSdk({
-        proxy: proxyUrl || null,
+      this._curlClients = new CurlHttpSdk({
         timeout: Settings.REQUEST_TIMEOUT * 1000,
-        proxyUid: proxyUid || null,
-      });
-
-      const client = {
-        sdk,
-        async post(url, data, options = {}) {
-          const headers = options.headers || {};
-          let finalUrl = url;
-
-          if (options.params && Object.keys(options.params).length > 0) {
-            const queryString = TikTokService.buildQueryString(options.params);
-            finalUrl = `${finalUrl}${finalUrl.includes('?') ? '&' : '?'}${queryString}`;
-          }
-
-          const proxyUidOverride = options.proxyUid !== undefined ? options.proxyUid : proxyUid;
-          const response = await sdk.post(finalUrl, data, headers, proxyUidOverride || null);
-          const responseHeaders = response.headers || {};
-          let bodyBuffer = Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body || '');
-          const encoding = (responseHeaders['content-encoding'] || '').toLowerCase();
-
-          try {
-            if (encoding.includes('gzip')) {
-              bodyBuffer = zlib.gunzipSync(bodyBuffer);
-            } else if (encoding.includes('deflate')) {
-              bodyBuffer = zlib.inflateSync(bodyBuffer);
-            }
-          } catch (decompressError) {
-            console.warn('Failed to decompress response body:', decompressError.message);
-          }
-
-          return {
-            status: response.status,
-            headers: responseHeaders,
-            data: bodyBuffer,
-          };
-        },
-      };
-
-      this._curlClients.set(key, client);
+      });;
     }
+    return {
+      sdk: this._curlClients,
+      async post(url, data, options = {}){
+        const headers = options.headers || {};
+        let finalUrl = url;
 
-    return this._curlClients.get(key);
+        if (options.params && Object.keys(options.params).length > 0) {
+          const queryString = TikTokService.buildQueryString(options.params);
+          finalUrl = `${finalUrl}${finalUrl.includes('?') ? '&' : '?'}${queryString}`;
+        }
+
+        const proxyUidOverride = options.proxyUid !== undefined ? options.proxyUid : proxyUid;
+        const response = await this.sdk.post(finalUrl, data, headers, proxyUidOverride || null);
+        const responseHeaders = response.headers || {};
+        let bodyBuffer = Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body || '');
+        const encoding = (responseHeaders['content-encoding'] || '').toLowerCase();
+
+        try {
+          if (encoding.includes('gzip')) {
+            bodyBuffer = zlib.gunzipSync(bodyBuffer);
+          } else if (encoding.includes('deflate')) {
+            bodyBuffer = zlib.inflateSync(bodyBuffer);
+          }
+        } catch (decompressError) {
+          console.warn('Failed to decompress response body:', decompressError.message);
+        }
+
+        return {
+          status: response.status,
+          headers: responseHeaders,
+          data: bodyBuffer,
+        };
+      },
+    };
   }
 
   /**
@@ -480,7 +468,6 @@ class TikTokService {
     try {
       // 1. 解析 cookie_data
       const cookies = this.parseCookieData(cookieData);
-      console.log("cookies:",cookies)
       // 2. 提取必要的 cookie 字段
       // 2.1 提取 uid：优先从 cookies.uid，如果没有则从 multi_sids 中提取
       let senderId = cookies.uid || cookies.user_id;
@@ -680,7 +667,6 @@ class TikTokService {
         'Host': conversationHost,
         'Cookie': this.buildCookieString(cookies)
       };
-      console.log('requestHeaders:',requestHeaders)
       const url = `${conversationBaseUrl}/v2/conversation/create?`+finalQueryString;
       console.log('url:',url)
       const proxyUid = cookies.uid || cookies.user_id || null;
@@ -835,12 +821,24 @@ class TikTokService {
       
       // 2. 提取必要的 cookie 字段
       const senderId = cookies.uid || cookies.user_id;
-      const iid = cookies.install_id;
+      let iid = cookies.install_id;
       const actualDeviceId = deviceId || cookies.device_id;
+      if (!iid) {
+        iid = String(
+          Math.floor(Math.random() * 9_000_000_000_000_000) + 1_000_000_000_000_000
+        );
+      }
+      if (!actualDeviceId) {
+        actualDeviceId = String(
+          Math.floor(Math.random() * 9_000_000_000_000_000) + 1_000_000_000_000_000
+        );
+      }
       const actualCreateTime = createTime || Math.floor(Date.now() / 1000);
       
-      if (!senderId || !iid || !actualDeviceId) {
-        throw new Error('Missing required cookie fields: uid, install_id, device_id');
+      if (!senderId || !actualDeviceId) {
+        console.log("senderId:",senderId)
+        console.log("actualDeviceId:",actualDeviceId)
+        throw new Error('Missing required cookie fields: uid, device_id');
       }
 
       // 3. 构建 URL 和查询参数
@@ -987,11 +985,20 @@ class TikTokService {
     try {
       const cookies = this.parseCookieData(cookieData);
       const senderId = cookies.uid || cookies.user_id;
-      const iid = cookies.install_id;
-      const deviceId = cookies.device_id;
-
-      if (!senderId || !iid || !deviceId) {
-        throw new Error('Missing required cookie fields: uid, install_id, device_id');
+      let iid = cookies.install_id;
+      if (!iid) {
+        iid = String(
+          Math.floor(Math.random() * 9_000_000_000_000_000) + 1_000_000_000_000_000
+        );
+      }
+      let deviceId = cookies.device_id;
+      if (!deviceId) {
+        deviceId = String(
+          Math.floor(Math.random() * 9_000_000_000_000_000) + 1_000_000_000_000_000
+        );
+      }
+      if (!senderId || !deviceId) {
+        throw new Error('Missing required cookie fields: uid, device_id');
       }
 
       const ua = cookies['User-Agent'] || cookies.user_agent || 'okhttp/3.12.13.20';
@@ -1297,7 +1304,6 @@ class TikTokService {
       };
       
       // 9. 发送请求
-      console.log('requestHeaders:',requestHeaders)
       console.log("url:",url)
       const proxyUid = cookies.uid || cookies.user_id || null;
       const client = this.getHttpClient(proxyUrl, proxyUid);

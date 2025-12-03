@@ -150,7 +150,6 @@ class TiktokAppSdk {
       if (!receiverId || !messageData || !cookieData) {
         throw new Error('Missing required parameters: receiverId, messageData, cookieData');
       }
-      console.log("[cookieData1111:]",cookieData)
 
       const proxyUrl = proxyConfig || null;
 
@@ -193,7 +192,6 @@ class TiktokAppSdk {
       let finalConvId = conversationId;
       if (!finalConvId) {
         try {
-          console.log("[cookieData22222:]",cookieData)
           const conversationResult = await TikTokService.createConversation(
             receiverId,
             cookieData,

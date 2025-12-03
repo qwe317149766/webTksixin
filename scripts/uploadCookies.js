@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const mysql = require('mysql2/promise');
 const config = require('../config');
 
@@ -34,6 +35,7 @@ const tableSuffix = args[1] || ''; // 默认不带后缀
 
 // 构建表名
 const tableName = tableSuffix ? `uni_cookies_${tableSuffix}` : 'uni_cookies';
+const BATCH_SIZE = Number(config.upload?.batchSize) || 200;
 
 console.log('📋 配置信息:');
 console.log(`   文件路径: ${txtFilePath}`);
@@ -141,94 +143,112 @@ async function uploadCookies() {
     let failCount = 0;
     const errors = [];
 
-    // 逐行处理 cookies
+    const preparedRows = [];
+
     for (let i = 0; i < cookieLines.length; i++) {
       const cookieLine = cookieLines[i];
-      
       try {
-        // 解析 cookie
         const cookieObj = parseCookieString(cookieLine);
-        const cookieJson = JSON.stringify(cookieObj);
-
         const { priorityCode, storeCountryCode } = getPriorityInfo(cookieObj);
-        
-        // 检查是否已存在（根据 sessionid 或其他唯一标识）
-        // 这里假设使用 sessionid 作为唯一标识，如果没有则插入新记录
-        let sessionid = cookieObj.sessionid || cookieObj['sessionid'] || null;
-        
-        // 从 cookie 中提取 uid（优先从 uid 参数读取，如果没有则从 multi_sids 中提取）
         let ckUid = 0;
-        
-        // 优先从 uid 参数读取
+
         if (cookieObj.uid || cookieObj['uid']) {
           const uid = cookieObj.uid || cookieObj['uid'];
-          ckUid = parseInt(uid) || 0;
+          ckUid = parseInt(uid, 10) || 0;
         } else {
-          // 如果没有 uid，则从 multi_sids 中提取
           const multiSids = cookieObj.multi_sids || cookieObj['multi_sids'];
           if (multiSids) {
             const match = String(multiSids).match(/^(\d+)/);
             if (match) {
-              ckUid = parseInt(match[1]);
+              ckUid = parseInt(match[1], 10) || 0;
             }
           }
         }
 
-        // 将 cookie 转换为字符串格式（原始格式）
-        const cookiesText = cookieLine;
+        const sessionid = cookieObj.sessionid || cookieObj['sessionid'] || null;
+        const cookieHash = crypto
+          .createHash('sha1')
+          .update(cookieLine.trim())
+          .digest('hex');
 
-        let existingId = null;
-        let dedupeField = '';
-
-        if (ckUid > 0) {
-          const [existingByUid] = await connection.execute(
-            `SELECT id FROM ${tableName} WHERE ck_uid = ? LIMIT 1`,
-            [ckUid]
-          );
-          if (existingByUid.length > 0) {
-            existingId = existingByUid[0].id;
-            dedupeField = 'ck_uid';
-          }
-        } else {
-          ckUid = 0; // 确保非数字时存 0
-        }
-
-        if (!existingId && sessionid) {
-          const [existingBySession] = await connection.execute(
-            `SELECT id FROM ${tableName} WHERE cookies_text LIKE ? LIMIT 1`,
-            [`%sessionid=${sessionid}%`]
-          );
-          if (existingBySession.length > 0) {
-            existingId = existingBySession[0].id;
-            dedupeField = 'sessionid';
-          }
-        }
-
-        if (existingId) {
-          await connection.execute(
-            `UPDATE ${tableName} SET cookies_text = ?, ck_uid = ?, store_country_code = ?, priority_code = ?, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
-            [cookiesText, ckUid, storeCountryCode || '', priorityCode, existingId]
-          );
-          console.log(
-            `  🔁 [${i + 1}/${cookieLines.length}] 基于 ${dedupeField} 去重并更新成功 (CK UID: ${ckUid || 'N/A'}, 优先级: ${priorityCode}, 国家: ${storeCountryCode || '未知'})`
-          );
-        } else {
-          await connection.execute(
-            `INSERT INTO ${tableName} (cookies_text, ck_uid, store_country_code, priority_code, create_time, update_time) VALUES (?, ?, ?, ?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP())`,
-            [cookiesText, ckUid, storeCountryCode || '', priorityCode]
-          );
-          const sessionLog = sessionid ? `sessionid: ${sessionid.substring(0, 10)}...` : 'sessionid: 无';
-          console.log(
-            `  ✅ [${i + 1}/${cookieLines.length}] 插入成功 (${sessionLog}, CK UID: ${ckUid || 'N/A'}, 优先级: ${priorityCode}, 国家: ${storeCountryCode || '未知'})`
-          );
-        }
-        
-        successCount++;
+        preparedRows.push({
+          cookiesText: cookieLine,
+          cookieHash,
+          ckUid,
+          storeCountryCode: storeCountryCode || '',
+          priorityCode,
+          sessionPreview: sessionid ? `${sessionid.substring(0, 10)}...` : 'sessionid: 无',
+          lineNumber: i + 1,
+        });
       } catch (error) {
         failCount++;
         const errorMsg = `第 ${i + 1} 行处理失败: ${error.message}`;
         errors.push(errorMsg);
         console.error(`  ❌ [${i + 1}/${cookieLines.length}] ${errorMsg}`);
+      }
+    }
+
+    const insertSqlBase = `
+      INSERT INTO ${tableName}
+        (cookies_text, ck_uid, store_country_code, priority_code, is_aync, create_time, update_time)
+      VALUES %VALUES%
+      ON DUPLICATE KEY UPDATE
+        cookies_text = VALUES(cookies_text),
+        ck_uid = VALUES(ck_uid),
+        store_country_code = VALUES(store_country_code),
+        priority_code = VALUES(priority_code),
+        is_aync = VALUES(is_aync),
+        update_time = VALUES(update_time)
+    `;
+
+    const singleInsertSql = insertSqlBase.replace('%VALUES%', '(?,?,?,?,?,UNIX_TIMESTAMP(),UNIX_TIMESTAMP())');
+
+    for (let start = 0; start < preparedRows.length; start += BATCH_SIZE) {
+      const chunk = preparedRows.slice(start, start + BATCH_SIZE);
+      const placeholders = chunk
+        .map(() => '(?,?,?,?,?,UNIX_TIMESTAMP(),UNIX_TIMESTAMP())')
+        .join(',');
+      const params = [];
+      chunk.forEach(row => {
+        params.push(
+          row.cookiesText,
+          row.ckUid,
+          row.storeCountryCode,
+          row.priorityCode,
+          0
+        );
+      });
+
+      try {
+        await connection.execute(insertSqlBase.replace('%VALUES%', placeholders), params);
+        successCount += chunk.length;
+        console.log(
+          `  ✅ 批次 ${Math.floor(start / BATCH_SIZE) + 1} 写入 ${chunk.length} 条 (累计 ${successCount})`
+        );
+      } catch (chunkError) {
+        console.warn(
+          `⚠️  批次 ${Math.floor(start / BATCH_SIZE) + 1} 批量插入失败，降级为单条处理: ${chunkError.message}`
+        );
+        for (const row of chunk) {
+          try {
+            await connection.execute(singleInsertSql, [
+              row.cookiesText,
+              row.ckUid,
+              row.storeCountryCode,
+              row.priorityCode,
+              0,
+            ]);
+            successCount++;
+            console.log(
+              `    ✅ 行 ${row.lineNumber} 写入成功 (${row.sessionPreview}, CK UID: ${row.ckUid || 'N/A'})`
+            );
+          } catch (rowError) {
+            failCount++;
+            const errorMsg = `行 ${row.lineNumber} 降级写入失败: ${rowError.message}`;
+            errors.push(errorMsg);
+            console.error(`    ❌ ${errorMsg}`);
+          }
+        }
       }
     }
 
@@ -291,6 +311,7 @@ async function ensureTableExists(connection, tableName) {
           \`job_status\` tinyint(1) NOT NULL DEFAULT '0' COMMENT '脚本状态{radio}(0:待使用,1:使用中)',
           \`store_country_code\` varchar(100) NOT NULL DEFAULT '' COMMENT '国家代码',
           \`error_count\` int(11) NOT NULL DEFAULT '0' COMMENT '脚本执行错误次数',
+           \`is_aync\` int(11) NOT NULL DEFAULT '0' COMMENT '脚本执行错误次数',
           PRIMARY KEY (\`id\`) USING BTREE,
           KEY \`idx_job_status\` (\`job_status\`) USING BTREE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

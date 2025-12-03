@@ -2,26 +2,41 @@ const mysql = require('mysql2/promise');
 const config = require('../config');
 const MessageSender = require('../services/messageSender');
 const redis = require('../config/redis');
+const { getCurlHttpSdkInstance } = require('../CurlHttpSdk');
 
 const fs = require('fs');
+const path = require('path');
 
 /**
  * 检查 Cookies 状态脚本（支持并发处理）
- * 
- * 使用方法:
- * node scripts/checkCookies.js [表后缀] [批量大小] [接收人txt文件路径] [并发数量]
- * 
- * 示例:
- * node scripts/checkCookies.js 1 10 receivers.txt
- * node scripts/checkCookies.js 1 10 receivers.txt 5
+ * 通过 scripts/checkCookies.config.json 进行统一配置
  */
 
-// 解析命令行参数
-const args = process.argv.slice(2);
-const tableSuffix = args[0] || ''; // 默认不带后缀
-const batchSize = parseInt(args[1]) || 10; // 默认批量大小 10
-const receiversFilePath = args[2] || null; // 接收人txt文件路径
-const concurrency = parseInt(args[3]) || 5; // 并发数量，默认 5
+const CONFIG_FILE = path.resolve(__dirname, 'checkCookies.config.json');
+let scriptConfig = {};
+
+try {
+  const configContent = fs.readFileSync(CONFIG_FILE, 'utf8');
+  scriptConfig = JSON.parse(configContent);
+} catch (err) {
+  console.error(`❌ 无法读取配置文件 ${CONFIG_FILE}: ${err.message}`);
+  process.exit(1);
+}
+
+function getConfigValue(key, defaultValue = undefined) {
+  if (Object.prototype.hasOwnProperty.call(scriptConfig, key)) {
+    return scriptConfig[key];
+  }
+  return defaultValue;
+}
+
+const tableSuffix = getConfigValue('tableSuffix', '');
+const batchSize = Number(getConfigValue('batchSize', 100)) || 100;
+const receiversFilePath = getConfigValue('receiversFile', null);
+const messagesFilePath = getConfigValue('messagesFile', null);
+const messagesAsBlock = Boolean(getConfigValue('messagesAsBlock', false));
+const concurrency = Number(getConfigValue('concurrency', 100)) || 100;
+const fixedMessageText = getConfigValue('fixedMessage', null);
 
 // 构建表名
 const tableName = tableSuffix ? `uni_cookies_${tableSuffix}` : 'uni_cookies';
@@ -84,36 +99,73 @@ function parseCookieString(cookieStr) {
   return cookieObj;
 }
 
-// 读取接收人列表
-function readReceivers(filePath) {
+function readTextFileLines(filePath, label, options = {}) {
+  const { singleBlock = false } = options;
   if (!filePath) {
-    console.error('❌ 错误: 请提供接收人txt文件路径');
-    console.log('使用方法: node scripts/checkCookies.js [表后缀] [批量大小] [接收人txt文件路径]');
+    console.error(`❌ 错误: 请在配置文件中指定 ${label} txt 文件路径`);
     process.exit(1);
   }
 
-  if (!fs.existsSync(filePath)) {
-    console.error(`❌ 错误: 文件不存在: ${filePath}`);
+  const resolvedPath = path.isAbsolute(filePath)
+    ? filePath
+    : path.resolve(__dirname, filePath);
+
+  if (!fs.existsSync(resolvedPath)) {
+    console.error(`❌ 错误: ${label} 文件不存在: ${resolvedPath}`);
     process.exit(1);
   }
 
   try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const receivers = content.split('\n')
+    const content = fs.readFileSync(resolvedPath, 'utf8');
+
+    if (singleBlock) {
+      const block = content.trim();
+      if (!block) {
+        console.error(`❌ 错误: ${label} 文件为空`);
+        process.exit(1);
+      }
+      console.log(`📄 读取到 1 个 ${label}（整块模式）`);
+      return [block];
+    }
+
+    const lines = content
+      .split('\n')
       .map(line => line.trim())
       .filter(line => line.length > 0);
-    
-    if (receivers.length === 0) {
-      console.error('❌ 错误: 接收人文件为空');
+
+    if (lines.length === 0) {
+      console.error(`❌ 错误: ${label} 文件为空`);
       process.exit(1);
     }
 
-    console.log(`📄 读取到 ${receivers.length} 个接收人`);
-    return receivers;
+    console.log(`📄 读取到 ${lines.length} 个 ${label}`);
+    return lines;
   } catch (error) {
-    console.error(`❌ 读取接收人文件失败: ${error.message}`);
+    console.error(`❌ 读取 ${label} 文件失败: ${error.message}`);
     process.exit(1);
   }
+}
+
+function readReceivers(filePath) {
+  return readTextFileLines(filePath, '接收人');
+}
+
+function readMessages(filePath) {
+  if (typeof fixedMessageText === 'string' && fixedMessageText.trim()) {
+    console.log('📄 使用固定文本内容（来自配置）');
+    return [fixedMessageText.trim()];
+  }
+  return readTextFileLines(filePath, '文本内容', {
+    singleBlock: messagesAsBlock,
+  });
+}
+
+function pickRandom(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) {
+    return '';
+  }
+  const index = Math.floor(Math.random() * arr.length);
+  return arr[index];
 }
 
 // 是否存入 Redis 的配置
@@ -124,6 +176,7 @@ console.log(`   表名: ${tableName}`);
 console.log(`   批量大小: ${batchSize}`);
 console.log(`   并发数量: ${concurrency}`);
 console.log(`   接收人文件: ${receiversFilePath || '未指定'}`);
+console.log(`   文本文件: ${messagesFilePath || '未指定'}`);
 console.log(`   存入Redis: ${saveToRedis ? '是' : '否'}`);
 console.log('');
 
@@ -151,7 +204,13 @@ async function checkCookies() {
 
     // 读取接收人列表
     const receivers = readReceivers(receiversFilePath);
+    const messages = readMessages(messagesFilePath);
     let receiverIndex = 0; // 当前使用的接收人索引
+    const curlSdkInstance = getCurlHttpSdkInstance({
+      proxy: config?.curl?.defaultProxy || null,
+      proxyPool: config?.curl?.proxyPool || [],
+    });
+    console.log('🧰 CurlHttpSdk 单例已初始化');
 
     // Redis 存储键名（统一存储，不区分表）
     const redisHashKey = `cookies:data:all`; // 存储所有正常CK的详细信息（Hash结构）
@@ -180,40 +239,6 @@ async function checkCookies() {
 
       console.log(`\n📦 获取到 ${records.length} 条待检测记录，开始并发检测（并发数: ${concurrency}）...`);
 
-      // 并发控制函数 - 确保队列中始终有指定数量的任务在执行
-      async function processWithConcurrency(items, concurrencyLimit, processor) {
-        const results = [];
-        let currentIndex = 0;
-        
-        // 创建一个工作函数，处理单个任务
-        async function worker() {
-          while (currentIndex < items.length) {
-            const index = currentIndex++;
-            if (index >= items.length) break;
-            
-            try {
-              const result = await processor(items[index]);
-              results[index] = result;
-            } catch (error) {
-              results[index] = { error };
-            }
-          }
-        }
-        
-        // 启动指定数量的工作线程
-        const workers = [];
-        const actualConcurrency = Math.min(concurrencyLimit, items.length);
-        
-        for (let i = 0; i < actualConcurrency; i++) {
-          workers.push(worker());
-        }
-        
-        // 等待所有工作线程完成
-        await Promise.all(workers);
-        
-        return results;
-      }
-
       // 处理单条记录的函数
       async function processRecord(record, index) {
         const { id, cookies_text, ck_uid } = record;
@@ -228,7 +253,6 @@ async function checkCookies() {
           let result = null;
           let success = false;
           let newStatus = null;
-
           // 如果遇到 10001，尝试换接收人重试
           while (retryCount < maxRetries && !success) {
             // 原子性地获取接收人索引
@@ -242,21 +266,27 @@ async function checkCookies() {
             }
 
             // 构建请求数据并调用发送接口
+            let textMsg = pickRandom(messages);
+            if (!textMsg) {
+              textMsg = 'test';
+            }
+
             try {
               const cookieObj = parseCookieString(cookies_text);
               result = await MessageSender.sendPrivateMessage({
                 sendType: 'app',
                 receiverId: toUid,
-                messageData: 'test',
+                messageData: textMsg,
                 cookieObject: cookieObj,
                 cookiesText: cookies_text,
                 requestData: {
                   toUid,
-                  textMsg: 'test',
+                  textMsg,
                   cookieParams: cookies_text,
                   createSequenceId: Math.floor(Math.random() * 500) + 10000,
                   sendSequenceId: Math.floor(Math.random() * 500) + 10013,
                 },
+                sdkInstance: curlSdkInstance,
               });
             } catch (error) {
               const errorMsg =
@@ -265,13 +295,12 @@ async function checkCookies() {
               const isFailedConversation =
                 errorMsg === 'FailedConversation' ||
                 (typeof errorMsg === 'string' &&
-                  errorMsg.includes('FailedConversation'));
+                  (errorMsg.includes('FailedConversation') || errorMsg.includes('Failed to parse conversation_id')));
 
               if (!isFailedConversation) {
                 console.error(`  ❌ [${index + 1}] 创建会话/发送失败: ${errorMsg || error}`);
                 throw error;
               }
-
               console.error(`  ❌ [${index + 1}] 创建私信关系失败 (FailedConversation): ${errorMsg}`);
               await recordConnection.execute(
                 `UPDATE ${tableName} SET error_count = IFNULL(error_count, 0) + 1, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
@@ -282,7 +311,7 @@ async function checkCookies() {
                 [id]
               );
               const currentErrorCount = Number(errorRows[0]?.error_count || 0);
-              if (currentErrorCount >= 3) {
+              if (currentErrorCount >= 1) {
                 await recordConnection.execute(
                   `UPDATE ${tableName} SET status = 3, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
                   [id]
@@ -293,6 +322,7 @@ async function checkCookies() {
               totalProcessed++;
               failCount++;
               success = true; // 标记为已处理，继续后续记录
+              
               break;
             }
 
@@ -397,12 +427,16 @@ async function checkCookies() {
         }
       }
 
-      // 并发处理所有记录
-      await processWithConcurrency(
-        records.map((record, index) => ({ record, index })),
-        concurrency,
-        ({ record, index }) => processRecord(record, index)
-      );
+      // 并发处理当前批次，但等待全部任务完成后再进入下一批
+      const tasksWithIndex = records.map((record, index) => ({ record, index }));
+      const chunkSize = Math.max(1, Math.floor(concurrency));
+
+      for (let start = 0; start < tasksWithIndex.length; start += chunkSize) {
+        const chunk = tasksWithIndex.slice(start, start + chunkSize);
+        await Promise.all(
+          chunk.map(({ record, index }) => processRecord(record, index))
+        );
+      }
 
       console.log(`\n✅ 本批次处理完成 (${records.length} 条)`);
 
