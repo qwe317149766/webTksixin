@@ -23,7 +23,7 @@ module.exports = {
   },
   // 本地 MySQL（用于 cookies 等）
   mysql: {
-    host: '62.164.220.35',
+    host: 'localhost',
     port: 3306,
     user: 'uni_fb',
     password: 'G4fMJZCkjHLLZDNs',
@@ -81,13 +81,13 @@ module.exports = {
     max: 100000,
   },
   task: {
-    batchSize: 1, // 批量处理任务数量
-    concurrency: 1, // 并发数
-    lowThreshold: 2, // 低阈值
+    batchSize: 100, // 批量处理任务数量
+    concurrency: 100, // 并发数
+    lowThreshold: 200, // 低阈值
     cookieRatio: {
       multiplier: 1, // cookies 总数倍数（相对于 tasks.length）
-      priority1Ratio: 2/3, // priority_code=1 的比例
-      priority0Ratio: 1/3, // priority_code=0 的比例
+      priority1Ratio: 0, // priority_code=1 的比例
+      priority0Ratio: 1, // priority_code=0 的比例
     },
     needMoreThrottleMs: 100,
     sender: {
