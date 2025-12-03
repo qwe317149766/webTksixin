@@ -97,8 +97,14 @@ class CurlHttpSdk extends EventEmitter {
             // 清理
             this.multi.removeHandle(handle);
             handle.close();
-            this.handles.splice(key, 1);
-            this.handlesData.splice(key, 1);
+            if (key >= 0) {
+                this.handles.splice(key, 1);
+                this.handlesData.splice(key, 1);
+                this.handlesHeaders.splice(key, 1);
+            } else {
+                this.handlesData.pop();
+                this.handlesHeaders.pop();
+            }
             this.callbacks.delete(handle);
         });
     }

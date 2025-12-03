@@ -137,6 +137,79 @@ function normalizeUids(rawUids) {
   return [];
 }
 
+function extractTokenFromRequest(req) {
+  if (!req) {
+    return null;
+  }
+
+  const authHeader = req.headers?.authorization || req.headers?.['x-token'];
+  if (authHeader && typeof authHeader === 'string') {
+    const trimmed = authHeader.trim();
+    if (trimmed.toLowerCase().startsWith('bearer ')) {
+      return trimmed.slice(7).trim();
+    }
+    return trimmed;
+  }
+
+  if (req.body?.token) {
+    return String(req.body.token).trim();
+  }
+
+  if (req.query?.token) {
+    return String(req.query.token).trim();
+  }
+
+  return null;
+}
+
+function normalizePayConfig(config = {}) {
+  return {
+    proxy_price: Number(config.proxy_price) || 0,
+    unit_proxy: Number(config.unit_proxy) || 0,
+    unit_sixin: Number(config.unit_sixin) || 0,
+    sixin_price: Number(config.sixin_price) || 0,
+    unit_score: Number(config.unit_score) || 0,
+    score_price: Number(config.score_price) || 0,
+  };
+}
+
+function calculatePaymentQuote(totalCount, payConfig = {}) {
+  const normalizedTotal = Number(totalCount);
+  if (!Number.isFinite(normalizedTotal) || normalizedTotal <= 0) {
+    throw new Error('total 必须是大于 0 的数字');
+  }
+
+  const normalizedConfig = normalizePayConfig(payConfig);
+  const formatAmount = (value) => Number(Number(value || 0).toFixed(4));
+
+  const proxyCost =
+    normalizedConfig.proxy_price > 0 && normalizedConfig.unit_proxy > 0
+      ? formatAmount((normalizedTotal / normalizedConfig.unit_proxy) * normalizedConfig.proxy_price)
+      : 0;
+
+  const sendCost =
+    normalizedConfig.sixin_price > 0
+      ? normalizedConfig.unit_sixin > 0
+        ? formatAmount((normalizedTotal / normalizedConfig.unit_sixin) * normalizedConfig.sixin_price)
+        : formatAmount(normalizedTotal * normalizedConfig.sixin_price)
+      : 0;
+
+  const totalCost = formatAmount(proxyCost + sendCost);
+  const currencyAmount =
+    normalizedConfig.score_price > 0 && normalizedConfig.unit_score > 0
+      ? formatAmount((totalCost / normalizedConfig.unit_score) * normalizedConfig.score_price)
+      : null;
+
+  return {
+    total: normalizedTotal,
+    proxyCost,
+    sendCost,
+    totalCost,
+    currencyAmount,
+    config: normalizedConfig,
+  };
+}
+
 /**
  * 根据 userId、batchNo、taskId 与 UID 列表，将任务写入队列
  * @param {string|number} userId
@@ -537,6 +610,74 @@ app.post('/api/tiktok/send-text', async (req, res) => {
 });
 
 /**
+ * 获取当前支付配置
+ * GET /api/v1/pay/config
+ */
+app.get('/api/v1/pay/config', async (req, res) => {
+  try {
+    const token = extractTokenFromRequest(req);
+    if (!token) {
+      return Response.error(res, '未登录', -1, null, 401);
+    }
+
+    const user = await verifyToken(token);
+    if (!user || !user.uid) {
+      return Response.error(res, 'token 无效或已过期', -1, null, 401);
+    }
+
+    const payConfig = await QuotaService.getPayConfigFromDB(user.uid);
+    if (!payConfig) {
+      return Response.error(res, '未获取到支付配置', -1, null, 500);
+    }
+
+    return Response.success(res, normalizePayConfig(payConfig), '获取支付配置成功', 0);
+  } catch (error) {
+    console.error('获取支付配置失败:', error);
+    return Response.error(res, error.message || '获取支付配置失败', -1, null, 500);
+  }
+});
+
+/**
+ * 根据下单数量获取预计支付金额
+ * POST /api/v1/pay/quote
+ * body: { total: number }
+ */
+app.post('/api/v1/pay/quote', async (req, res) => {
+  try {
+    const token = extractTokenFromRequest(req);
+    if (!token) {
+      return Response.error(res, '未登录', -1, null, 401);
+    }
+
+    const user = await verifyToken(token);
+    if (!user || !user.uid) {
+      return Response.error(res, 'token 无效或已过期', -1, null, 401);
+    }
+
+    const { total } = req.body || {};
+    if (total === undefined || total === null || Number.isNaN(Number(total))) {
+      return Response.error(res, 'total 参数必填且必须是数字', -1, null, 400);
+    }
+
+    const normalizedTotal = Number(total);
+    if (normalizedTotal <= 0 || !Number.isInteger(normalizedTotal)) {
+      return Response.error(res, 'total 必须是大于 0 的整数', -1, null, 400);
+    }
+
+    const payConfig = await QuotaService.getPayConfigFromDB(user.uid);
+    if (!payConfig) {
+      return Response.error(res, '未获取到支付配置', -1, null, 500);
+    }
+
+    const quote = calculatePaymentQuote(normalizedTotal, payConfig);
+    return Response.success(res, quote, '计算成功', 0);
+  } catch (error) {
+    console.error('计算支付金额失败:', error);
+    return Response.error(res, error.message || '计算支付金额失败', -1, null, 500);
+  }
+});
+
+/**
  * 提交发送任务
  * POST /api/tasks/submit
  *
@@ -638,23 +779,27 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
     const currentQuota = await QuotaService.getQuota(userId);
 
     //获取每条需要消耗的积分
-    const payConfig = await QuotaService.getPayConfigFromDB(userId);
-    
-    if (!payConfig) {
+    const rawPayConfig = await QuotaService.getPayConfigFromDB(userId);
+    if (!rawPayConfig) {
       return Response.error(res, '获取支付配置失败', -1, null, 500);
     }
 
-    console.log("[payConfig]:",payConfig)
-    //计算代理费用：总数 / 每单位代理数 * 每单位价格
-    const proxyCost = (normalizedTotal / payConfig.unit_proxy) * payConfig.proxy_price;
-    //计算发送费用：总数 / 每单位私信数 * 每单位价格
-    const sendCost = (normalizedTotal / payConfig.unit_sixin) * payConfig.sixin_price;
-    //统计总费用
-    const totalCost = proxyCost + sendCost;
+    let quote;
+    try {
+      quote = calculatePaymentQuote(normalizedTotal, rawPayConfig);
+    } catch (quoteError) {
+      return Response.error(res, quoteError.message || '计算支付金额失败', -1, null, 400);
+    }
 
-    console.log("[totalCost]:",totalCost)
-    console.log("[proxyCost]:",proxyCost)
-    console.log("[sendCost]:",sendCost)
+    const {
+      proxyCost,
+      sendCost,
+      totalCost,
+      currencyAmount,
+      config: normalizedPayConfig,
+    } = quote;
+
+    console.log('[payQuote]:', quote);
     // 判断余额是否足够
     if (currentQuota < totalCost) {
       const insufficient = totalCost - currentQuota;
@@ -679,11 +824,8 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
       mark: `发送数量: ${normalizedTotal}, 代理费: ${proxyCost.toFixed(2)}, 发送费: ${sendCost.toFixed(2)}`,
       buyNum: normalizedTotal,
       payConfig: {
-        total: normalizedTotal,
-        proxyCost,
-        sendCost,
-        totalCost,
-        config: payConfig,
+        ...quote,
+        config: normalizedPayConfig,
       },
       billType: 'sixin',
       billCategory: 'frozen',
@@ -706,7 +848,7 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
     await redis.setex(`task:${taskId}`, 86400, JSON.stringify({
       userId,
       total: normalizedTotal,
-      payConfig: payConfig,
+      payConfig: normalizedPayConfig,
       content: contentArray, // 保存为数组
       msgType,
       proxy,
@@ -730,7 +872,8 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
       proxyCost,
       sendCost,
       billId,
-      payConfig
+      payConfig: normalizePayConfig(rawPayConfig),
+      currencyAmount,
     }, '任务提交成功，余额已扣减并冻结', 0);
 
   } catch (error) {
@@ -1241,4 +1384,5 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 module.exports = app;
+
 
