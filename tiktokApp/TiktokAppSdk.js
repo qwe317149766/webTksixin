@@ -262,7 +262,8 @@ class TiktokAppSdk {
       }
 
       const cm = checkMessage || {};
-      const statusCode = cm.status_code ?? cm.statusCode ?? null;
+      let statusCode = cm.status_code ?? cm.statusCode ?? null;
+      statusCode = parseInt(statusCode);
 
       if (statusCode === 7192) {
         return buildResponse(10001, '发送消息成功', {...sendBody,filter_reason: filterReason});

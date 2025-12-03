@@ -338,6 +338,14 @@ function parseCookieString(cookieStr) {
   return cookieObj;
 }
 
+function getUserCookieTableName(uid) {
+  const numericUid = Number(uid);
+  if (!Number.isFinite(numericUid) || numericUid <= 0) {
+    return 'uni_cookies_0';
+  }
+  return `uni_cookies_${numericUid}`;
+}
+
 /**
  * 发送文本消息接口
  * POST /api/tiktok/send-text
@@ -359,7 +367,6 @@ app.post('/api/tiktok/send-text', async (req, res) => {
     const { 
       toUid, 
       textMsg, 
-      tableName = 'uni_cookies_1', // 默认表名
       proxy, 
       createSequenceId,
       sendSequenceId
@@ -374,20 +381,53 @@ app.post('/api/tiktok/send-text', async (req, res) => {
       return Response.error(res, '缺少必需参数: textMsg (消息内容不能为空)', -1, null, 400);
     }
 
+    // 鉴权并确定所属账号
+    const authHeader = req.headers.authorization || req.headers['x-token'];
+    let token = null;
+    if (authHeader) {
+      token = authHeader.startsWith('Bearer ') ? authHeader.substring(7) : authHeader;
+    }
+    if (!token && req.body.token) {
+      token = req.body.token;
+    }
+    if (!token) {
+      return Response.error(res, '未登录', -1, null, 401);
+    }
+    const user = await verifyToken(token);
+    if (!user || !user.uid) {
+      return Response.error(res, 'token 无效或已过期', -1, null, 401);
+    }
+    let tableName = getUserCookieTableName(user.uid);
+
     // 从数据库获取 cookie（按 used_count 升序排序，使用次数少的优先）
     dbConnection = await mysqlPool.getConnection();
-    
-    const [records] = await dbConnection.execute(
-      `SELECT id, cookies_text, ck_uid, used_count 
-       FROM ${tableName} 
-       WHERE status = 1 
-       ORDER BY used_count ASC, update_time DESC 
-       LIMIT 1`
-    );
+    let records;
+    try {
+      [records] = await dbConnection.execute(
+        `SELECT id, cookies_text, ck_uid, used_count 
+         FROM ${tableName} 
+         WHERE status = 1 
+         ORDER BY used_count ASC, update_time DESC 
+         LIMIT 1`
+      );
+    } catch (error) {
+      if (error.code === 'ER_NO_SUCH_TABLE' && tableName !== 'uni_cookies_0') {
+        tableName = 'uni_cookies_0';
+        [records] = await dbConnection.execute(
+          `SELECT id, cookies_text, ck_uid, used_count 
+           FROM ${tableName} 
+           WHERE status = 1 
+           ORDER BY used_count ASC, update_time DESC 
+           LIMIT 1`
+        );
+      } else {
+        throw error;
+      }
+    }
 
     if (records.length === 0) {
       await dbConnection.release();
-      return Response.error(res, `未找到状态为正常(status=1) 的 Cookie`, -1, null, 404);
+      return Response.error(res, `未找到可用 Cookie`, -1, null, 404);
     }
 
     const cookieRecord = records[0];
@@ -649,6 +689,8 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
     // 初始化任务计数
     await TaskStore.initTaskCounters(taskId, normalizedTotal);
      
+    const cookieTable = getUserCookieTableName(userId);
+
     //将提交的信息缓存到redis 
     await redis.setex(`task:${taskId}`, 86400, JSON.stringify({
       userId,
@@ -658,6 +700,7 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
       msgType,
       proxy,
       sendType,
+      cookieTable,
       taskId,
       totalCost,
       proxyCost,

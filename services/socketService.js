@@ -195,15 +195,21 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
   });
 
   // 统一结果处理：更新配额、进度、Cookie 状态等
+  const defaultCookieTable = 'uni_cookies_0';
+
   batchRequester.on('result', async (result) => {
-    const tableName = 'uni_cookies_1';
     let dbConnection = null;
     let {task} = result.data;
     const data = result.data || {};
     const cookieId = data.cookieId || result.cookieId;
     console.log('cookieId:',cookieId,"code:",data.code)
     const taskIdFromResult = task.taskId;
+    const tableName =
+      data.cookieTable ||
+      task.cookieTable ||
+      defaultCookieTable;
     console.log('taskIdFromResult:',taskIdFromResult)
+    
     try {
       dbConnection = await mysqlPool.getConnection();
       if (data.code === 0) {
@@ -525,13 +531,26 @@ function parseCookieString(cookieStr) {
   return cookieObj;
 }
 
- async  function getAlivableCookies(dbConnection, tableName,totalNum) {
+function getUserCookieTableName(uid) {
+  const numericUid = Number(uid);
+  if (!Number.isFinite(numericUid) || numericUid <= 0) {
+    return 'uni_cookies_0';
+  }
+  return `uni_cookies_${numericUid}`;
+}
+
+async  function getAlivableCookies(dbConnection, tableName,totalNum) {
     // 获取配置的分配比例
     const cookieRatio = config.task?.cookieRatio || {
       multiplier: 1.5,
       priority1Ratio: 2/3,
       priority0Ratio: 1/3,
     };
+
+  const whereParts = ['status = 1'];
+  const whereParams = [];
+
+  const whereClause = whereParts.join(' AND ');
 
     // 计算需要获取的 cookies 数量
     const totalCookiesNeeded = Math.ceil(totalNum * cookieRatio.multiplier);
@@ -544,20 +563,20 @@ function parseCookieString(cookieStr) {
     const [priority1Cookies] = await dbConnection.execute(
       `SELECT id, cookies_text, ck_uid, used_count 
        FROM ${tableName} 
-       WHERE status = 1 AND priority_code = 1
+     WHERE ${whereClause} AND priority_code = 1
        ORDER BY used_count ASC, update_time DESC 
        LIMIT ?`,
-      [priority1Count]
+    [...whereParams, priority1Count]
     );
 
     // 从数据库获取 priority_code=0 的 cookies
     const [priority0Cookies] = await dbConnection.execute(
       `SELECT id, cookies_text, ck_uid, used_count 
        FROM ${tableName} 
-       WHERE status = 1 AND priority_code = 0
+     WHERE ${whereClause} AND priority_code = 0
        ORDER BY used_count ASC, update_time DESC 
        LIMIT ?`,
-      [priority0Count]
+    [...whereParams, priority0Count]
     );
 
     // 合并所有 cookies（优先使用 priority_code=1 的）
@@ -575,7 +594,7 @@ function parseCookieString(cookieStr) {
 async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statusUpdater) {
   if (!tasks || tasks.length === 0) return;
 
-  const tableName = 'uni_cookies_1'; // 默认表名，可以从配置或任务中获取
+  let tableName = 'uni_cookies_0'; // 默认表名，可以从配置或任务中获取
   let dbConnection = null;
   let taskInfo = null;
 
@@ -591,19 +610,46 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
     }
   
 
+    const userId = tasks[0]?.userId;
+    if (taskInfo?.cookieTable) {
+      tableName = taskInfo.cookieTable;
+    } else {
+      tableName = getUserCookieTableName(userId);
+    }
+
     // 获取数据库连接
     dbConnection = await mysqlPool.getConnection();
 
-    const allCookies = await getAlivableCookies(dbConnection, tableName, tasks.length);
+    let allCookies;
+    try {
+      allCookies = await getAlivableCookies(
+        dbConnection,
+        tableName,
+        tasks.length
+      );
+    } catch (error) {
+      if (error.code === 'ER_NO_SUCH_TABLE' && tableName !== 'uni_cookies_0') {
+        console.warn(`[Task] Cookie 表 ${tableName} 不存在，降级到 uni_cookies_0`);
+        tableName = 'uni_cookies_0';
+        allCookies = await getAlivableCookies(dbConnection, tableName, tasks.length);
+      } else {
+        throw error;
+      }
+    }
 
-    if (allCookies.length === 0) {
+    if ((!allCookies || allCookies.length === 0) && tableName !== 'uni_cookies_0') {
+      console.warn(`[Task] 表 ${tableName} 没有可用 Cookie，继续使用默认表`);
+      tableName = 'uni_cookies_0';
+      allCookies = await getAlivableCookies(dbConnection, tableName, tasks.length);
+    }
+
+    if (!allCookies || allCookies.length === 0) {
       console.warn(`[Task] 未找到可用 Cookie，休息10秒后重新处理`);
       
       // 等待10秒
       await new Promise(resolve => setTimeout(resolve, 10000));
       
       // 将任务重新放回队列
-      const userId = tasks[0]?.userId;
       if (userId) {
         for (const task of tasks) {
           if (!task.taskId) {
@@ -633,7 +679,6 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
     console.log(`[Task] 实际获取到 ${allCookies.length} 个 cookies `);
 
     // 为当前用户 + 任务获取（或创建）单例 BatchRequester
-    const userId = tasks[0]?.userId;
     const batchRequester = await getOrCreateBatchRequester(
       socketManager,
       userId,
@@ -705,6 +750,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
       const cookieRecord = selectedCookie;
       const cookiesText = cookieRecord.cookies_text;
       const cookieId = cookieRecord.id;
+      task.cookieTable = tableName;
       
       // 记录全局映射关系：uid -> cookie（每个 uid 只能被分配一次）
       uidCookieMap.set(uidKey, {
