@@ -717,6 +717,24 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
 
     console.log(`[Task] 实际获取到 ${allCookies.length} 个 cookies `);
 
+    async function requeueTasks(taskList = []) {
+      if (!taskList.length) return;
+      for (const item of taskList) {
+        if (!item || !item.taskId || !item.userId) {
+          continue;
+        }
+        const queueKey = TaskStore.getQueueKey(item.userId, item.taskId);
+        const entry = JSON.stringify({
+          batchNo: item.batchNo,
+          taskId: item.taskId,
+          uid: item.uid,
+          userId: item.userId,
+        });
+        await redis.zadd(queueKey, Date.now(), entry);
+      }
+      console.log(`[Task] 已将 ${taskList.length} 个任务重新放回队列 (taskId=${taskId})`);
+    }
+
     // 为当前用户 + 任务获取（或创建）单例 BatchRequester
     const batchRequester = await getOrCreateBatchRequester(
       socketManager,
@@ -732,12 +750,64 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
       return;
     }
 
-    // 为每个任务分配一个 Cookie 并添加任务
-    // 记录已使用的 cookie ID，避免重复分配
-    const usedCookieIds = new Set();
-    
-    for (let i = 0; i < tasks.length; i++) {
-      const task = tasks[i];
+    const seenUidSet = new Set();
+    const uniqueTasks = [];
+    const duplicateTasks = [];
+
+    for (const task of tasks) {
+      const uidKey = String(task.uid || '');
+      if (!uidKey) {
+        continue;
+      }
+      if (seenUidSet.has(uidKey)) {
+        duplicateTasks.push(task);
+        continue;
+      }
+      seenUidSet.add(uidKey);
+      uniqueTasks.push(task);
+    }
+
+    const filteredTasks = [];
+    const alreadyAssignedTasks = [];
+
+    for (const task of uniqueTasks) {
+      const uidKey = String(task.uid || '');
+      if (!uidKey) {
+        continue;
+      }
+      if (uidCookieMap.has(uidKey)) {
+        alreadyAssignedTasks.push(task);
+        continue;
+      }
+      filteredTasks.push(task);
+    }
+
+    const assignmentCount = Math.min(filteredTasks.length, allCookies.length);
+    if (assignmentCount === 0) {
+      await requeueTasks([
+        ...filteredTasks,
+        ...alreadyAssignedTasks,
+        ...duplicateTasks,
+      ]);
+      return;
+    }
+
+    const assignments = Array.from({ length: assignmentCount }, (_, idx) => ({
+      task: filteredTasks[idx],
+      cookie: allCookies[idx],
+    }));
+
+    const pendingTasks = [
+      ...filteredTasks.slice(assignmentCount),
+      ...alreadyAssignedTasks,
+      ...duplicateTasks,
+    ];
+
+    if (pendingTasks.length) {
+      await requeueTasks(pendingTasks);
+    }
+
+    assignments.forEach(({ task, cookie }) => {
       // 优先使用 batchInfo，如果没有则使用 taskInfo
       const batchInfo = task.batchInfo || {};
       const finalTaskInfo = taskInfo || {};
@@ -756,37 +826,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
       
       // 检查该 uid（接收者）是否已经在全局范围内分配过 cookie
       const uidKey = String(task.uid);
-      let cookieMapping = uidCookieMap.get(uidKey);
-      
-      if (cookieMapping) {
-        // 该 uid 已经被分配过 cookie，不能重复分配，跳过此任务
-        console.log(`[Task] 接收者 ${task.uid} 已被分配过 Cookie (ID: ${cookieMapping.cookieId}, 任务: ${cookieMapping.taskId})，跳过，不能重复发送`);
-        continue;
-      }
-      
-      // 未分配过，从可用 cookies 中选择一个（优先选择未使用的）
-      let selectedCookie = null;
-      
-      // 先尝试选择未使用的 cookie
-      for (let j = 0; j < allCookies.length; j++) {
-        const cookie = allCookies[j];
-        if (!usedCookieIds.has(cookie.id)) {
-          selectedCookie = cookie;
-          break;
-        }
-      }
-      
-      // 如果所有 cookie 都被使用过，则按顺序选择
-      if (!selectedCookie && allCookies.length > 0) {
-        selectedCookie = allCookies[i % allCookies.length];
-      }
-      
-      if (!selectedCookie) {
-        console.warn(`[Task] 任务 ${taskId} 的接收者 ${task.uid} 未找到可用 Cookie，跳过`);
-        continue;
-      }
-      
-      const cookieRecord = selectedCookie;
+      const cookieRecord = cookie;
       const cookiesText = cookieRecord.cookies_text;
       const cookieId = cookieRecord.id;
       task.cookieTable = tableName;
@@ -798,7 +838,6 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
         cookieRecord,
         taskId  // 记录是哪个任务分配的
       });
-      usedCookieIds.add(cookieId);
       
       console.log(`[Task] 接收者 ${task.uid} 分配新 Cookie (ID: ${cookieId})，任务: ${taskId}`);
       
@@ -870,7 +909,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
           };
         }
       });
-    }
+    });
 
   } catch (error) {
     console.error('[Task] 批量处理任务失败:', error);
