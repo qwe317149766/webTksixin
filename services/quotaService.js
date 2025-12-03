@@ -202,18 +202,18 @@ async function everyQuota(uid) {
  */
 async function getQuota(uid) {
   // 先查 Redis
-  const redisQuota = await getQuotaFromRedis(uid);
-  if (redisQuota !== null) {
-    return redisQuota;
-  }
+  // const redisQuota = await getQuotaFromRedis(uid);
+  // if (redisQuota !== null) {
+  //   return redisQuota;
+  // }
   
   // Redis 没有，查数据库
   const dbQuota = await getQuotaFromDB(uid);
   
-  // 将数据库余额同步到鉴权 Redis
-  if (dbQuota > 0) {
-    await authRedis.hset(QUOTA_KEY, uid, dbQuota);
-  }
+  // // 将数据库余额同步到鉴权 Redis
+  // if (dbQuota > 0) {
+  //   await authRedis.hset(QUOTA_KEY, uid, dbQuota);
+  // }
   
   return dbQuota;
 }

@@ -630,7 +630,14 @@ app.get('/api/v1/pay/config', async (req, res) => {
       return Response.error(res, '未获取到支付配置', -1, null, 500);
     }
 
-    return Response.success(res, normalizePayConfig(payConfig), '获取支付配置成功', 0);
+    const currentQuota = await QuotaService.getQuota(user.uid);
+
+    return Response.success(
+      res,
+      { ...normalizePayConfig(payConfig), quota: currentQuota },
+      '获取支付配置成功',
+      0
+    );
   } catch (error) {
     console.error('获取支付配置失败:', error);
     return Response.error(res, error.message || '获取支付配置失败', -1, null, 500);
@@ -670,7 +677,8 @@ app.post('/api/v1/pay/quote', async (req, res) => {
     }
 
     const quote = calculatePaymentQuote(normalizedTotal, payConfig);
-    return Response.success(res, quote, '计算成功', 0);
+    const currentQuota = await QuotaService.getQuota(user.uid);
+    return Response.success(res, { ...quote, quota: currentQuota }, '计算成功', 0);
   } catch (error) {
     console.error('计算支付金额失败:', error);
     return Response.error(res, error.message || '计算支付金额失败', -1, null, 500);
