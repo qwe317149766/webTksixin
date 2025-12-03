@@ -1,4 +1,6 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const compression = require('compression');
 const helmet = require('helmet');
 const cors = require('cors');
@@ -17,6 +19,15 @@ const Response = require('./utils/response');
 const { verifyToken } = require('./services/authService');
 const QuotaService = require('./services/quotaService');
 const GuidUtil = require('./utils/guid');
+
+const SUCCESS_UID_DIR = path.resolve(__dirname, 'public/success-uids');
+try {
+  if (!fs.existsSync(SUCCESS_UID_DIR)) {
+    fs.mkdirSync(SUCCESS_UID_DIR, { recursive: true });
+  }
+} catch (dirError) {
+  console.error(`[Init] 创建成功 UID 目录失败: ${dirError.message}`);
+}
 
 const app = express();
 
@@ -814,6 +825,57 @@ app.post('/api/v1/tk-task/enqueue', async (req, res) => {
   } catch (error) {
     console.error('添加任务失败:', error);
     return Response.error(res, error.message || '添加任务失败', -1, null, 500);
+  }
+});
+
+/**
+ * 下载任务对应的成功 UID 列表
+ * GET /api/v1/tasks/:taskId/success-uids
+ */
+app.get('/api/v1/tasks/:taskId/success-uids', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || req.headers['x-token'];
+    let token = null;
+    if (authHeader) {
+      token = authHeader.startsWith('Bearer ') ? authHeader.substring(7) : authHeader;
+    }
+    if (!token && req.query?.token) {
+      token = req.query.token;
+    }
+    if (!token) {
+      return Response.error(res, '未登录', -1, null, 401);
+    }
+
+    const user = await verifyToken(token);
+    if (!user || !user.uid) {
+      return Response.error(res, 'token 无效或已过期', -1, null, 401);
+    }
+
+    const taskId = (req.params.taskId || '').trim();
+    if (!taskId) {
+      return Response.error(res, 'taskId 不能为空', -1, null, 400);
+    }
+
+    const fileName = `${user.uid}-${taskId}.txt`;
+    const filePath = path.join(SUCCESS_UID_DIR, fileName);
+
+    try {
+      await fs.promises.access(filePath, fs.constants.F_OK);
+    } catch (err) {
+      return Response.error(res, '暂无成功 UID 文件', -1, null, 404);
+    }
+
+    return res.download(filePath, fileName, (err) => {
+      if (err) {
+        console.error(`下载成功 UID 文件失败 (taskId=${taskId}, uid=${user.uid}):`, err.message);
+        if (!res.headersSent) {
+          Response.error(res, '下载失败', -1, null, 500);
+        }
+      }
+    });
+  } catch (error) {
+    console.error('下载成功 UID 文件失败:', error);
+    return Response.error(res, error.message || '下载失败', -1, null, 500);
   }
 });
 

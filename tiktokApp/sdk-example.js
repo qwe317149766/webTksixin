@@ -5,44 +5,25 @@
  * 可通过 `npm run example` 或 `node sdk-example.js` 运行
  */
 
-const { TiktokAppSdk } = require('./TiktokAppSdk');
+const MessageSender = require('../services/messageSender');
 
 async function example() {
-  // 获取 SDK 实例
-  const sdk = TiktokAppSdk.getInstance();
-
   // 准备 Cookie 数据（可以是 JSON 字符串或对象）
-  const cookieData = {
-    'passport_csrf_token': '0d1de6a759f8f3991791427854690205', 
-    'passport_csrf_token_default': '0d1de6a759f8f3991791427854690205',
-     'odin_tt': 'd6a019990f9be72641ed3ef6301b01ea8a4f7345794d23a3d72a5c9c6048f9ad50f40290beb780197badb2eaae302997b04130ff95e6762cf38a6597c8fd3428f8c64344b487f5e6b851a597395dcaab', 
-     'multi_sids': '7574399196598977591%3Ad7a662e2d62b27d3b773378c6148ce48',
-      'cmpl_token': 'AgQQAPNSF-RPsLkjRVe0e50O83wyacIIf7XZYKNQPg',
-       'sid_guard': 'd7a662e2d62b27d3b773378c6148ce48%7C1764691846%7C15552000%7CSun%2C+31-May-2026+16%3A10%3A46+GMT', 
-       'uid_tt': '39710848fd2848f4e551324b7aa0d45651f1b90908e69a4b6317bf445f49e3d0',
-        'uid_tt_ss': '39710848fd2848f4e551324b7aa0d45651f1b90908e69a4b6317bf445f49e3d0',
-         'sid_tt': 'd7a662e2d62b27d3b773378c6148ce48',
-          'sessionid': 'd7a662e2d62b27d3b773378c6148ce48', 
-          'sessionid_ss': 'd7a662e2d62b27d3b773378c6148ce48',
-           'tt_session_tlb_tag': 'sttt%7C3%7C16Zi4tYrJ9O3czeMYUjOSP_________zc8z4WAT_ni6YujZNm7QAhp1Ff16vox44ouZfvWTDOgA%3D',
-            'reg-store-region': '',
-             'store-idc': 'useast5',
-              'store-country-sign': 'MEIEDGaU3upjE-fEZaUJrwQg6swiYV1LnMGfU7bI0iAE4oIWeyElCfmwigXFCmia_j8EEKhnfroJPqE1CQVQR9iAmyo',
-               'store-country-code': 'us',
-                'store-country-code-src': 'uid',
-                 'tt-target-idc': 'useast5',
-                 "uid":"7574399196598977591",
-                 "install_id":"7574399283915917069",
-                 "device_id":"7574398633660810807"}
+  const cookieData ={"install_id":"7579343637801715469","ttreq":"","passport_csrf_token":"cc7f8df84d8eed548910b53e89c7aed2","passport_csrf_token_default":"cc7f8df84d8eed548910b53e89c7aed2","cmpl_token":"AgQQAPNSF-RPsLkR0kaZdZ00806ljNhSv4zZYKNRRA","d_ticket":"d96c3599ec03cd75ae3a23f88deeb5f669056","multi_sids":"7579343635243025421%3A2967082e3fa28c9aaba5321399d0c1c7","sessionid":"2967082e3fa28c9aaba5321399d0c1c7","sessionid_ss":"2967082e3fa28c9aaba5321399d0c1c7","sid_guard":"2967082e3fa28c9aaba5321399d0c1c7%7C1764705654%7C15551999%7CSun%2C+31-May-2026+20%3A00%3A53+GMT","sid_tt":"2967082e3fa28c9aaba5321399d0c1c7","uid_tt":"f40ae6b7b643adb650ba6f70285d5593381ff18b7d0eff7952b312c857d0ef48","uid_tt_ss":"f40ae6b7b643adb650ba6f70285d5593381ff18b7d0eff7952b312c857d0ef48","msToken":"uTafDGXRJaqw79qlHH15lRlGy_mo9MTvXcPOXUyqp8-pcYxw-tVii8YQrqUL8xdcAXEtAHVHovTjxL188UKq1P1DL3tN2fDsFQb10mdALvgWjjwsCCX1KK1z_A==","odin_tt":"c000831360b2dcf4dc4680d10846f349bc8c119914ff53d2ae83097a4ebcfd8d709fb69038ae0bcb0dc8be9c9d35cc0fadfcf454afc188099f987cd4d45c85641ae5d93b5b9791b971d42cc1c9e349bc","store-country-code":"us","store-country-code-src":"uid","store-country-sign":"MEIEDHn3rZad6Z1DGM5QqgQgTWHuyM6lMe5pMR7tgwbj9Vo2AID_tmMgY9P0JkDX7mEEELiWYMYKgSk0ooev8f5ihuw","store-idc":"useast5","tt-target-idc":"useast5","s_v_web_id":"","username":"ckc.qxpo","password":"bnbd137@","X-Tt-Token":"042967082e3fa28c9aaba5321399d0c1c7006c9ec271216d3ea7a95e3ee5b6c9b67aba61d6b849e1e57c40e8139ab44a1fbb55aac69a32365aaba31cfd992822ecfd1ee3a4f3a839b210994a75c9bf37f141c0b5e3380ee3383bb45ded754d39dec50--0a4e0a20b17871163a04b1ebbc75f2b1d47bd0561af8d9e2246e4e836a9f12ca3de199e512201f0ec92e1f38063d044b0b8f5afd00ac5de9f71629bcc36f634521e3217a0a9d1801220674696b746f6b-3.0.1","Email":"","Emailpassword":"","ts_sign_ree":"ts.1.b53b5aa91b77d16e1ca9d79111656205388c57d343b0cb2a2ad31bcc37a807007a50e8a417df069df9a555bd16c66ef8b3639a56b642d7d8f9c881f42b9329ec","User-Agent":"Mozilla/5.0 (Linux; Android 14; V2157A Build/UP1A.231005.007; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.6367.219 Mobile Safari/537.36","uid":"7579343635243025421","device_id":"7579343490934212110","twofa":""}
+
+
+
 
 
   // 示例 1: 发送简单文本消息（会自动创建会话）
   try {
-    const result1 = await sdk.sendMessage({
-      receiverId: '7483070846815552512', // 接收者用户ID
+    const result1 = await MessageSender.sendPrivateMessage({
+      sendType: 'app',
+      receiverId: '7483070846815552513', // 接收者用户ID
       messageData: 'Hello, this is a test message!', // 消息文本
-      cookieData: cookieData, // Cookie 数据
-      proxyConfig: null, // 代理配置（可选）
+      cookieObject: cookieData,
+      cookiesText: JSON.stringify(cookieData),
+      proxy: 'socks5h://accountId-5086-tunnelId-12988-area-us-sessID-1222233-sessTime-5:a123456@proxyas.starryproxy.com:10000',
     });
     console.log('发送成功:', result1);
     console.log('会话ID:', result1.conversationId);

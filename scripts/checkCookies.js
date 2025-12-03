@@ -1,6 +1,6 @@
 const mysql = require('mysql2/promise');
 const config = require('../config');
-const { sendText } = require('../tiktokWeb/TiktokApi');
+const MessageSender = require('../services/messageSender');
 const redis = require('../config/redis');
 
 const fs = require('fs');
@@ -26,23 +26,24 @@ const concurrency = parseInt(args[3]) || 5; // 并发数量，默认 5
 // 构建表名
 const tableName = tableSuffix ? `uni_cookies_${tableSuffix}` : 'uni_cookies';
 
-// 状态码映射
 const STATUS_MAP = {
   0: '待检测',
   1: '已检测',
-  3: '已封禁',
-  4: '维护社区',
-  5: '发送太快',
-  7: '已退出'
+  2: '已风控',
+  3: '已退出',
+  4: '已封禁',
+  5: '维护社区',
+  6: '发送太快',
 };
 
-// 错误码到状态码的映射（根据 TiktokApi.sendText 的返回码）
 const ERROR_CODE_TO_STATUS = {
-  0: 1,        // 发送成功 -> 已检测
-  '-10001': 7, // 账户可能已退出 -> 已退出
-  10002: 5,    // 发送太快 -> 发送太快
-  10004: 3,    // 发送端限制私信 -> 已封禁
-  '-10000': 4  // 维护社区 -> 维护社区
+  0: 1,
+  '-10001': 3,
+  10004: 2,
+  7290: 2,
+  7289: 2,
+  '-10000': 5,
+  10002: 6,
 };
 
 // 需要换接收人重试的错误码（不更新状态，尝试下一个接收人）
@@ -159,7 +160,7 @@ async function checkCookies() {
     let successCount = 0;
     let failCount = 0;
     const statusCounts = {
-      0: 0, 1: 0, 3: 0, 4: 0, 5: 0, 7: 0
+      0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0,
     };
 
     // 循环处理，直到没有待检测的记录
@@ -240,17 +241,60 @@ async function checkCookies() {
               console.log(`  🔄 [${index + 1}] 重试 (${retryCount}/${maxRetries - 1}): 换接收人 ${toUid}`);
             }
 
-            // 构建请求数据
-            const requestData = {
-              toUid: toUid,
-              textMsg: 'test', // 测试消息
-              cookieParams: cookies_text,
-              createSequenceId: Math.floor(Math.random() * 500) + 10000,
-              sendSequenceId: Math.floor(Math.random() * 500) + 10013,
-            };
+            // 构建请求数据并调用发送接口
+            try {
+              const cookieObj = parseCookieString(cookies_text);
+              result = await MessageSender.sendPrivateMessage({
+                sendType: 'app',
+                receiverId: toUid,
+                messageData: 'test',
+                cookieObject: cookieObj,
+                cookiesText: cookies_text,
+                requestData: {
+                  toUid,
+                  textMsg: 'test',
+                  cookieParams: cookies_text,
+                  createSequenceId: Math.floor(Math.random() * 500) + 10000,
+                  sendSequenceId: Math.floor(Math.random() * 500) + 10013,
+                },
+              });
+            } catch (error) {
+              const errorMsg =
+                error?.error_msg ||
+                (typeof error?.message === 'string' ? error.message : '');
+              const isFailedConversation =
+                errorMsg === 'FailedConversation' ||
+                (typeof errorMsg === 'string' &&
+                  errorMsg.includes('FailedConversation'));
 
-            // 调用发送消息接口
-            result = await sendText(requestData);
+              if (!isFailedConversation) {
+                console.error(`  ❌ [${index + 1}] 创建会话/发送失败: ${errorMsg || error}`);
+                throw error;
+              }
+
+              console.error(`  ❌ [${index + 1}] 创建私信关系失败 (FailedConversation): ${errorMsg}`);
+              await recordConnection.execute(
+                `UPDATE ${tableName} SET error_count = IFNULL(error_count, 0) + 1, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
+                [id]
+              );
+              const [errorRows] = await recordConnection.execute(
+                `SELECT error_count FROM ${tableName} WHERE id = ?`,
+                [id]
+              );
+              const currentErrorCount = Number(errorRows[0]?.error_count || 0);
+              if (currentErrorCount >= 3) {
+                await recordConnection.execute(
+                  `UPDATE ${tableName} SET status = 3, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
+                  [id]
+                );
+                statusCounts[3] = (statusCounts[3] || 0) + 1;
+                console.log(`  ⚠️  [${index + 1}] error_count 达到 ${currentErrorCount}，标记为 ${STATUS_MAP[3]} (3)`);
+              }
+              totalProcessed++;
+              failCount++;
+              success = true; // 标记为已处理，继续后续记录
+              break;
+            }
 
             // 如果返回码是 10001（接收者被限制），尝试换接收人
             if (result.code === 10001) {

@@ -185,6 +185,11 @@ class TiktokAppSdk {
         : null;
 
       // 如果没有提供 conversationId，先创建私信关系
+      const buildResponse = (code, msg, data) => ({
+        code,
+        msg,
+        data
+      });
       let finalConvId = conversationId;
       if (!finalConvId) {
         try {
@@ -203,7 +208,7 @@ class TiktokAppSdk {
           finalConvId = conversationResult.conversationId;
 
           if (!finalConvId) {
-            throw new Error('Failed to create conversation');
+            throw new Error('FailedConversation');
           }
         } catch (conversationError) {
           console.error('Error creating conversation:', conversationError);
@@ -241,15 +246,10 @@ class TiktokAppSdk {
         checkMessage = checkMessageRaw;
       }
 
-      const buildResponse = (code, msg, data) => ({
-        code,
-        msg,
-        data,
-        conversationId: finalConvId,
-      });
+    
       console.log("[status:]",status === 0)
       console.log("[filterReason:]",filterReason)
-      console.log("[checkMessage:]",checkMessage.status_code === 7192)
+      console.log("[checkMessage:]",checkMessage)
       if (!sendBody) {
         return buildResponse(-1, '发送结果为空', null);
       }
@@ -266,7 +266,7 @@ class TiktokAppSdk {
       statusCode = parseInt(statusCode);
 
       if (statusCode === 7192) {
-        return buildResponse(10001, '发送消息成功', {...sendBody,filter_reason: filterReason});
+        return buildResponse(0, '发送消息成功', {...sendBody,filter_reason: filterReason});
       }
 
       if (statusCode === 7193) {

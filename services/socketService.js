@@ -1,4 +1,6 @@
 const { Server } = require('socket.io');
+const fs = require('fs');
+const path = require('path');
 const config = require('../config');
 const { verifyToken } = require('./authService');
 const TaskStore = require('../utils/taskStore');
@@ -25,6 +27,40 @@ function getTaskTotalKey(taskId) {
 function getTaskProgressKey(taskId) {
   if (!taskId) throw new Error('taskId 不能为空');
   return `${TASK_PROGRESS_PREFIX}:${taskId}`;
+}
+
+const successUidDir = path.resolve(__dirname, '../public/success-uids');
+let successDirReady = false;
+
+async function ensureSuccessDir() {
+  if (successDirReady) {
+    return;
+  }
+  await fs.promises.mkdir(successUidDir, { recursive: true });
+  successDirReady = true;
+}
+
+async function recordSuccessUidFile(userId, taskId, receiverUid) {
+  if (!userId || !taskId || !receiverUid) {
+    return;
+  }
+  try {
+    await ensureSuccessDir();
+    const fileName = `${userId}-${taskId}.txt`;
+    const filePath = path.join(successUidDir, fileName);
+    await fs.promises.appendFile(filePath, `${receiverUid}\n`, 'utf8');
+  } catch (error) {
+    console.error(`[Task] 写入成功 UID 文件失败 (userId=${userId}, taskId=${taskId}, uid=${receiverUid}):`, error.message);
+  }
+}
+
+function logSuccessUidAsync(userId, taskId, receiverUid) {
+  if (!userId || !taskId || !receiverUid) {
+    return;
+  }
+  recordSuccessUidFile(userId, taskId, receiverUid).catch((err) => {
+    console.error('[Task] 异步写入成功 UID 文件失败:', err.message);
+  });
 }
 
 const needMoreThrottleMap = new Map(); // key -> timestamp
@@ -239,6 +275,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           console.warn('[Task] 发送成功但缺少 cookieId，跳过使用次数更新');
         }
 
+        logSuccessUidAsync(task.userId, taskIdFromResult, task.uid || result.uid);
         await emitTaskProgress(socketManager, task.userId, taskIdFromResult);
         if (markResult.remaining <= 0) {
           await stopTaskQueue(task.userId, taskIdFromResult, 'completed');
@@ -274,6 +311,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
         let shouldRequeue = false;
         let tongJs = true
         let recordFail = true;
+        const receiverUid = result.uid || task.uid;
         console.log("[data.code]:",data.code)
         
         // 如果不是 -10001 错误，重置该 cookieId 的连续错误计数
@@ -281,6 +319,10 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           cookieError10001Counts.delete(cookieId);
         }
         
+        if (data.code === 10001 && receiverUid) {
+          logSuccessUidAsync(task.userId, taskIdFromResult, receiverUid);
+        }
+
         if (data.code === -10001) {
           // 处理 -10001 错误，跟踪连续错误次数
           if (cookieId) {
@@ -384,7 +426,6 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           shouldRequeue = true;
         }
         // 任务失败，从 uidCookieMap 中删除映射，允许重新分配
-        const receiverUid = result.uid || task.uid;
         if (receiverUid) {
           const uidKey = String(receiverUid);
           if (uidCookieMap.has(uidKey)) {

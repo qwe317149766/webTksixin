@@ -15,11 +15,11 @@
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
-const { TiktokAppSdk } = require('./TiktokAppSdk');
+const MessageSender = require('../services/messageSender');
 
 // === 可根据需求修改的固定参数 ===
 const DEFAULT_COOKIES_FILE = path.resolve(__dirname, 'cookies.txt');
-const DEFAULT_RECEIVER_ID = '7502761795141452807';
+const DEFAULT_RECEIVER_ID = '7231173793783251965';
 const DEFAULT_MESSAGE = 'Hello from batch script';
 const DEFAULT_PROXY = null; // 例如 'http://127.0.0.1:8888'
 // ===============================
@@ -83,7 +83,6 @@ async function main() {
   const messageText = DEFAULT_MESSAGE;
   const proxy = DEFAULT_PROXY || null;
 
-  const sdk = TiktokAppSdk.getInstance();
   const cookieList = await readCookieLines(cookiesFile);
 
   console.log(`共 ${cookieList.length} 个账号，将向用户 ${receiverId} 发送同一条私信。`);
@@ -97,14 +96,16 @@ async function main() {
     const label = cookieData.uid || cookieData.user_id || cookieData.device_id || `line-${index + 1}`;
 
     try {
-      const result = await sdk.sendMessage({
+      const result = await MessageSender.sendPrivateMessage({
+        sendType: 'app',
         receiverId,
         messageData: messageText,
-        cookieData,
-        proxyConfig: proxy,
+        cookieObject: cookieData,
+        cookiesText: JSON.stringify(cookieData),
+        proxy,
       });
-      const status = result?.result?.status;
-      const filterReason = result?.result?.filter_reason;
+      const status = result.code;
+      const filterReason = result?.data?.filter_reason || result?.filter_reason;
 
       if (status === 0) {
         successCount += 1;
