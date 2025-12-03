@@ -114,24 +114,24 @@ async function getQuotaFromDB(uid) {
 async function getPayConfigFromDB(uid) {
   try {
     //先从鉴权 Redis 中获取
-    const redisConfig = await authRedis.hget(QUOTA_CONFIG_KEY, uid);
-    if(redisConfig) {
-      try {
-        const config = JSON.parse(redisConfig);
-        // 确保所有值都是 Number 类型
-        return {
-          proxy_price: Number(config.proxy_price) || 100,
-          unit_proxy: Number(config.unit_proxy) || 10000,
-          unit_sixin: Number(config.unit_sixin) || 1,
-          sixin_price: Number(config.sixin_price) || 1,
-          unit_score: Number(config.unit_score) || 1,
-          score_price: Number(config.score_price) || 0.03,
-        };
-      } catch (parseError) {
-        console.error(`[Quota] 解析 Redis 配置失败 (UID: ${uid}):`, parseError.message);
-        // 继续从数据库获取
-      }
-    }
+    // const redisConfig = await authRedis.hget(QUOTA_CONFIG_KEY, uid);
+    // if(redisConfig) {
+    //   try {
+    //     const config = JSON.parse(redisConfig);
+    //     // 确保所有值都是 Number 类型
+    //     return {
+    //       proxy_price: Number(config.proxy_price) || 100,
+    //       unit_proxy: Number(config.unit_proxy) || 10000,
+    //       unit_sixin: Number(config.unit_sixin) || 1,
+    //       sixin_price: Number(config.sixin_price) || 1,
+    //       unit_score: Number(config.unit_score) || 1,
+    //       score_price: Number(config.score_price) || 0.03,
+    //     };
+    //   } catch (parseError) {
+    //     console.error(`[Quota] 解析 Redis 配置失败 (UID: ${uid}):`, parseError.message);
+    //     // 继续从数据库获取
+    //   }
+    // }
     // 使用远程 MySQL 读取账户配置
     const [rows] = await authMysqlPool.execute(
       `SELECT  * FROM uni_system_admin WHERE id = ?  LIMIT 1`,
@@ -170,14 +170,14 @@ async function getPayConfigFromDB(uid) {
       score_price = Number(systemConfig.score_price) || 0.03 //等于3分钱
     } 
     //将值写入鉴权 Redis
-    await authRedis.hset(QUOTA_CONFIG_KEY, uid, JSON.stringify({
-      proxy_price,
-      unit_proxy,
-      unit_sixin,
-      sixin_price,
-      unit_score,
-      score_price,
-    }));
+    // await authRedis.hset(QUOTA_CONFIG_KEY, uid, JSON.stringify({
+    //   proxy_price,
+    //   unit_proxy,
+    //   unit_sixin,
+    //   sixin_price,
+    //   unit_score,
+    //   score_price,
+    // }));
     return {
       proxy_price,
       unit_proxy,

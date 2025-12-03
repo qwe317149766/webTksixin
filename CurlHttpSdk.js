@@ -262,15 +262,51 @@ class CurlHttpSdk extends EventEmitter {
 
     request(method, url, headers = {}, body = null, proxyID = null) {
         return new Promise((resolve, reject) => {
-            const connection =this.pickConnection(proxyID);
-			if(connection){
-				connection.activeRequests += 1;
-			}
+            const connection = this.pickConnection(proxyID);
+            if (connection) {
+                connection.activeRequests += 1;
+            }
 
-            const handle = this._createEasy(method, url, headers, body, connection?.proxyUrl || null, connection);
+            const handle = this._createEasy(
+                method,
+                url,
+                headers,
+                body,
+                connection?.proxyUrl || null,
+                connection
+            );
+
+            const cleanupOnFailure = () => {
+                const idx = this.handles.indexOf(handle);
+                if (idx >= 0) {
+                    this.handles.splice(idx, 1);
+                    this.handlesData.splice(idx, 1);
+                    this.handlesHeaders.splice(idx, 1);
+                } else {
+                    this.handlesData.pop();
+                    this.handlesHeaders.pop();
+                }
+                this.callbacks.delete(handle);
+                if (connection) {
+                    connection.activeRequests = Math.max(0, connection.activeRequests - 1);
+                }
+            };
+
             this.handles.push(handle);
             this.callbacks.set(handle, { resolve, reject });
-            this.multi.addHandle(handle);
+
+            setImmediate(() => {
+                try {
+                    this.multi.addHandle(handle);
+                } catch (error) {
+                    cleanupOnFailure();
+                    reject(
+                        new Error(
+                            `Failed to add handle to multi: ${error.message || 'unknown error'}`
+                        )
+                    );
+                }
+            });
         });
     }
 
