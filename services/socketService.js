@@ -240,6 +240,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
     const cookieId = data.cookieId || result.cookieId;
     console.log('cookieId:',cookieId,"code:",data.code)
     const taskIdFromResult = task.taskId;
+    console.log("[data]:",data)
     const tableName =
       data.cookieTable ||
       task.cookieTable ||
@@ -492,6 +493,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           preferredPriority !== undefined && !Number.isNaN(preferredPriority)
             ? preferredPriority
             : undefined;
+        console.log('[拉取特定账号]',normalizedPreferred)    
         triggerTaskProcessing(task.userId, task.taskId, 1, {
           preferredPriority: normalizedPreferred,
         });
@@ -961,6 +963,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
             cookieId,
             taskId,
             task,
+            priorityCode
           };
         } catch (error) {
           return {
@@ -972,6 +975,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
             cookieId,
             taskId,
             task,
+            priorityCode
           };
         }
       });
