@@ -6,18 +6,18 @@ const DEFAULT_CHANNEL =
   (config.task?.sender?.channel || 'web').toString().toLowerCase();
 
 function resolveChannel(preferred) {
-  if (preferred === 1 || preferred === '1') {
-    return 'app';
-  }
-  if (preferred === 0 || preferred === '0') {
-    return 'web';
-  }
-  if (typeof preferred === 'string') {
-    const lower = preferred.toLowerCase();
-    if (lower === 'app' || lower === 'web') {
-      return lower;
-    }
-  }
+  // if (preferred === 1 || preferred === '1') {
+  //   return 'app';
+  // }
+  // if (preferred === 0 || preferred === '0') {
+  //   return 'web';
+  // }
+  // if (typeof preferred === 'string') {
+  //   const lower = preferred.toLowerCase();
+  //   if (lower === 'app' || lower === 'web') {
+  //     return lower;
+  //   }
+  // }
   return DEFAULT_CHANNEL === 'app' ? 'app' : 'web';
 }
 
