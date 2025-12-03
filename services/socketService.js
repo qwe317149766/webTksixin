@@ -745,46 +745,13 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
     if ((!allCookies || allCookies.length === 0) && tableName !== 'uni_cookies_0') {
       console.warn(`[Task] 表 ${tableName} 没有可用 Cookie，继续使用默认表`);
       tableName = 'uni_cookies_0';
-      allCookies = await loadCookies(tableName);
+      allCookies = await loadCookies(tableName); 
     }
-
-    if (!allCookies || allCookies.length === 0) {
-      console.warn(`[Task] 未找到可用 Cookie，休息10秒后重新处理`);
-      
-      // 等待10秒
-      await new Promise(resolve => setTimeout(resolve, 10000));
-      
-      // 将任务重新放回队列
-      if (userId) {
-        for (const task of tasks) {
-          if (!task.taskId) {
-            console.warn(`[Task] 任务缺少 taskId，跳过:`, task);
-            continue;
-          }
-          const queueKey = TaskStore.getQueueKey(task.userId, task.taskId);
-          const entry = JSON.stringify({
-            batchNo: task.batchNo,
-            taskId: task.taskId,
-            uid: task.uid,
-            userId: task.userId
-          });
-          await redis.zadd(queueKey, Date.now(), entry);
-        }
-        console.log(`[Task] 已将 ${tasks.length} 个任务重新放回队列，等待重新处理`);
-        //触发一次任务执行
-        triggerTaskProcessing(userId, taskId, tasks.length);
-        // // 触发 onNeedMore 回调，让上层重新获取任务
-        // if (typeof onNeedMore === 'function') {
-        //   onNeedMore(tasks.length);
-        // }
-      }
-      return;
-    }
-
-    console.log(`[Task] 实际获取到 ${allCookies.length} 个 cookies `);
 
     async function requeueTasks(taskList = []) {
-      if (!taskList.length) return;
+      if (!taskList.length) {
+        return;
+      }
       for (const item of taskList) {
         if (!item || !item.taskId || !item.userId) {
           continue;
@@ -800,6 +767,22 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
       }
       console.log(`[Task] 已将 ${taskList.length} 个任务重新放回队列 (taskId=${taskId})`);
     }
+
+    if (!allCookies || allCookies.length === 0) {
+      console.warn(`[Task] 未找到可用 Cookie，任务 ${taskId} 将停止 (用户 ${userId})`);
+      await requeueTasks(tasks);
+      if (typeof statusUpdater === 'function') {
+        await statusUpdater('stopped', '暂无可用账号，任务已停止', {
+          reason: 'no_available_cookies',
+        });
+      }
+      if (userId) {
+        await stopTaskQueue(userId, taskId, 'no_available_cookies');
+      }
+      return;
+    }
+
+    console.log(`[Task] 实际获取到 ${allCookies.length} 个 cookies `);
 
     // 为当前用户 + 任务获取（或创建）单例 BatchRequester
     const batchRequester = await getOrCreateBatchRequester(
