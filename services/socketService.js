@@ -235,8 +235,8 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
 
   batchRequester.on('result', async (result) => {
     let dbConnection = null;
-    let {task} = result.data;
     const data = result.data || {};
+    const task = data.task || result.task || {};
     const cookieId = data.cookieId || result.cookieId;
     console.log('cookieId:',cookieId,"code:",data.code)
     const taskIdFromResult = task.taskId;
@@ -481,7 +481,21 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
       if (dbConnection) {
         dbConnection.release();
       }
-      triggerTaskProcessing(task.userId, task.taskId,  1);
+      if (task && task.userId && task.taskId) {
+        const preferredPriority =
+          data.priorityCode !== undefined
+            ? Number(data.priorityCode)
+            : task.priorityCode !== undefined
+              ? Number(task.priorityCode)
+              : undefined;
+        const normalizedPreferred =
+          preferredPriority !== undefined && !Number.isNaN(preferredPriority)
+            ? preferredPriority
+            : undefined;
+        triggerTaskProcessing(task.userId, task.taskId, 1, {
+          preferredPriority: normalizedPreferred,
+        });
+      }
     }
   });
 
@@ -578,7 +592,7 @@ function getUserCookieTableName(uid) {
   return `uni_cookies_${numericUid}`;
 }
 
-async  function getAlivableCookies(dbConnection, tableName,totalNum) {
+async  function getAlivableCookies(dbConnection, tableName,totalNum, options = {}) {
     // 获取配置的分配比例
     const cookieRatio = config.task?.cookieRatio || {
       multiplier: 1.5,
@@ -593,6 +607,33 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum) {
 
     // 计算需要获取的 cookies 数量
     const totalCookiesNeeded = Math.ceil(totalNum * cookieRatio.multiplier);
+    const priorityCodeFilter = options.priorityCode;
+    const priorityCount =
+      options.priorityCount && Number.isFinite(options.priorityCount)
+        ? Math.max(1, Math.floor(options.priorityCount))
+        : null;
+
+    if (
+      priorityCodeFilter !== undefined &&
+      priorityCodeFilter !== null &&
+      !Number.isNaN(Number(priorityCodeFilter))
+    ) {
+      const desiredCode = Number(priorityCodeFilter);
+      const desiredCount = priorityCount || totalNum || 1;
+      console.log(
+        `[Task] 定向获取 priority_code=${desiredCode} 的 cookies，数量 ${desiredCount}`
+      );
+      const [priorityCookies] = await dbConnection.execute(
+        `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
+         FROM ${tableName}
+         WHERE ${whereClause} AND priority_code = ?
+         ORDER BY day_count ASC
+         LIMIT ?`,
+        [desiredCode, desiredCount]
+      );
+      return priorityCookies;
+    }
+
     const priority1Count = Math.ceil(totalCookiesNeeded * cookieRatio.priority1Ratio);
     const priority0Count = Math.ceil(totalCookiesNeeded * cookieRatio.priority0Ratio);
 
@@ -600,7 +641,7 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum) {
 
     // 从数据库获取 priority_code=1 的 cookies
     const [priority1Cookies] = await dbConnection.execute(
-      `SELECT id, cookies_text, ck_uid, used_count, day_count 
+      `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
        FROM ${tableName} 
      WHERE ${whereClause} AND priority_code = 1
        ORDER BY day_count ASC
@@ -610,7 +651,7 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum) {
 
     // 从数据库获取 priority_code=0 的 cookies
     const [priority0Cookies] = await dbConnection.execute(
-      `SELECT id, cookies_text, ck_uid, used_count, day_count 
+      `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
        FROM ${tableName} 
      WHERE ${whereClause} AND priority_code = 0
        ORDER BY day_count ASC
@@ -630,7 +671,7 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum) {
  * @param {Function} onNeedMore
  * @param {Function} statusUpdater
  */
-async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statusUpdater) {
+async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statusUpdater, options = {}) {
   if (!tasks || tasks.length === 0) return;
 
   let tableName = 'uni_cookies_0'; // 默认表名，可以从配置或任务中获取
@@ -659,18 +700,41 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
     // 获取数据库连接
     dbConnection = await mysqlPool.getConnection();
 
+    const preferredPriority =
+      options && options.hasOwnProperty('preferredPriority')
+        ? options.preferredPriority
+        : undefined;
+    const normalizedPreferred =
+      preferredPriority !== undefined && preferredPriority !== null
+        ? Number(preferredPriority)
+        : null;
+    const usePreferred =
+      normalizedPreferred !== null && !Number.isNaN(normalizedPreferred);
+
+    async function loadCookies(desiredTable) {
+      if (!usePreferred) {
+        return await getAlivableCookies(dbConnection, desiredTable, tasks.length);
+      }
+      const targeted = await getAlivableCookies(dbConnection, desiredTable, 1, {
+        priorityCode: normalizedPreferred,
+        priorityCount: 1,
+      });
+      const remaining = Math.max(0, tasks.length - targeted.length);
+      if (remaining <= 0) {
+        return targeted;
+      }
+      const others = await getAlivableCookies(dbConnection, desiredTable, remaining);
+      return [...targeted, ...others];
+    }
+
     let allCookies;
     try {
-      allCookies = await getAlivableCookies(
-        dbConnection,
-        tableName,
-        tasks.length
-      );
+      allCookies = await loadCookies(tableName);
     } catch (error) {
       if (error.code === 'ER_NO_SUCH_TABLE' && tableName !== 'uni_cookies_0') {
         console.warn(`[Task] Cookie 表 ${tableName} 不存在，降级到 uni_cookies_0`);
         tableName = 'uni_cookies_0';
-        allCookies = await getAlivableCookies(dbConnection, tableName, tasks.length);
+        allCookies = await loadCookies(tableName);
       } else {
         throw error;
       }
@@ -679,7 +743,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
     if ((!allCookies || allCookies.length === 0) && tableName !== 'uni_cookies_0') {
       console.warn(`[Task] 表 ${tableName} 没有可用 Cookie，继续使用默认表`);
       tableName = 'uni_cookies_0';
-      allCookies = await getAlivableCookies(dbConnection, tableName, tasks.length);
+      allCookies = await loadCookies(tableName);
     }
 
     if (!allCookies || allCookies.length === 0) {
@@ -829,7 +893,9 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
       const cookieRecord = cookie;
       const cookiesText = cookieRecord.cookies_text;
       const cookieId = cookieRecord.id;
+      const priorityCode = Number(cookieRecord.priority_code) || 0;
       task.cookieTable = tableName;
+      task.priorityCode = priorityCode;
       
       // 记录全局映射关系：uid -> cookie（每个 uid 只能被分配一次）
       uidCookieMap.set(uidKey, {
@@ -923,8 +989,22 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
 function createTaskProcessor(socketManager, userId, taskId, statusChecker, statusUpdater) {
   let isProcessing = false;
   let pendingDemand = 0;
+  let nextPreferredPriority = null;
 
-  const triggerProcessing = async (demand = 1) => {
+  const triggerProcessing = async (demand = 1, options = {}) => {
+    if (
+      options &&
+      Object.prototype.hasOwnProperty.call(options, 'preferredPriority')
+    ) {
+      const incoming = options.preferredPriority;
+      if (incoming === null || incoming === undefined) {
+        nextPreferredPriority = null;
+      } else {
+        const normalized = Number(incoming);
+        nextPreferredPriority = Number.isNaN(normalized) ? null : normalized;
+      }
+    }
+
     const normalizedDemand = Number.isFinite(demand) && demand > 0 ? Math.floor(demand) : 0;
     if (normalizedDemand > 0) {
       pendingDemand += normalizedDemand;
@@ -999,8 +1079,10 @@ function createTaskProcessor(socketManager, userId, taskId, statusChecker, statu
               }
             }
           },
-          statusUpdater
+          statusUpdater,
+          { preferredPriority: nextPreferredPriority }
         );
+        nextPreferredPriority = null;
       }
     } catch (error) {
       console.error(`任务轮询失败 (uid=${userId}, taskId=${taskId}):`, error);
@@ -1253,13 +1335,13 @@ function initSocketServer(httpServer) {
  * @param {string} taskId - 任务 ID
  * @returns {boolean} - 是否成功触发
  */
-function triggerTaskProcessing(userId, taskId, demand = 1) {
+function triggerTaskProcessing(userId, taskId, demand = 1, options = {}) {
   const taskKey = `${userId}:${taskId}`;
   const triggerFn = globalTaskProcessors.get(taskKey);
   
   if (triggerFn) {
     console.log(`[Task] 外部触发任务处理: 用户 ${userId}, 任务 ${taskId}, 数量 ${demand}`);
-    triggerFn(demand).catch(error => {
+    triggerFn(demand, options).catch(error => {
       console.error(`[Task] 触发任务处理失败 (taskId=${taskId}):`, error);
     });
     return true;
