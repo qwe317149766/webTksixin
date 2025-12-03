@@ -411,16 +411,17 @@ class TikTokService {
   /**
    * 创建 HTTP 客户端（支持代理）
    */
-  static getHttpClient(proxyUrl) {
+  static getHttpClient(proxyUrl, proxyUid = null) {
     if (!this._curlClients) {
       this._curlClients = new Map();
     }
 
-    const key = proxyUrl || 'default';
+    const key = `${proxyUrl || 'default'}:${proxyUid || 'anon'}`;
     if (!this._curlClients.has(key)) {
       const sdk = new CurlHttpSdk({
         proxy: proxyUrl || null,
         timeout: Settings.REQUEST_TIMEOUT * 1000,
+        proxyUid: proxyUid || null,
       });
 
       const client = {
@@ -434,7 +435,8 @@ class TikTokService {
             finalUrl = `${finalUrl}${finalUrl.includes('?') ? '&' : '?'}${queryString}`;
           }
 
-          const response = await sdk.post(finalUrl, data, headers);
+          const proxyUidOverride = options.proxyUid !== undefined ? options.proxyUid : proxyUid;
+          const response = await sdk.post(finalUrl, data, headers, proxyUidOverride || null);
           const responseHeaders = response.headers || {};
           let bodyBuffer = Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body || '');
           const encoding = (responseHeaders['content-encoding'] || '').toLowerCase();
@@ -681,12 +683,14 @@ class TikTokService {
       console.log('requestHeaders:',requestHeaders)
       const url = `${conversationBaseUrl}/v2/conversation/create?`+finalQueryString;
       console.log('url:',url)
-      const client = this.getHttpClient(proxyUrl);
+      const proxyUid = cookies.uid || cookies.user_id || null;
+      const client = this.getHttpClient(proxyUrl, proxyUid);
       
       const response = await client.post(url, postDataBuffer, {
         headers: requestHeaders,
         // params: params,
-        responseType: 'arraybuffer'
+        responseType: 'arraybuffer',
+        proxyUid,
       });
       
       // 8. 解析响应
@@ -1137,10 +1141,12 @@ class TikTokService {
         });
       }
       requestHeaders = Object.assign(requestHeaders, buildGuard1);
-      const client = this.getHttpClient(proxyUrl);
+      const proxyUid = cookies.uid || cookies.user_id || null;
+      const client = this.getHttpClient(proxyUrl, proxyUid);
       const response = await client.post(url, postDataBuffer, {
         headers: requestHeaders,
-        responseType: 'arraybuffer'
+        responseType: 'arraybuffer',
+        proxyUid,
       });
 
       const buffer = Buffer.isBuffer(response.data) ? response.data : Buffer.from(response.data);
@@ -1293,10 +1299,12 @@ class TikTokService {
       // 9. 发送请求
       console.log('requestHeaders:',requestHeaders)
       console.log("url:",url)
-      const client = this.getHttpClient(proxyUrl);
+      const proxyUid = cookies.uid || cookies.user_id || null;
+      const client = this.getHttpClient(proxyUrl, proxyUid);
       const response = await client.post(url, Buffer.from(postDataHex, 'hex'), {
         headers: requestHeaders,
-        responseType: 'arraybuffer'
+        responseType: 'arraybuffer',
+        proxyUid,
       });
       
       // 10. 解析响应
@@ -1459,10 +1467,12 @@ class TikTokService {
       };
       
       // 9. 发送请求
-      const client = this.getHttpClient(proxyUrl);
+      const proxyUid = cookies.uid || cookies.user_id || null;
+      const client = this.getHttpClient(proxyUrl, proxyUid);
       const response = await client.post(url, Buffer.from(postDataHex, 'hex'), {
         headers: requestHeaders,
-        responseType: 'arraybuffer'
+        responseType: 'arraybuffer',
+        proxyUid,
       });
       
       // 10. 解析响应

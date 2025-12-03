@@ -94,4 +94,7 @@ module.exports = {
       channel: 'app',
     }
   },
+  proxy: {
+    socks5: 'socks5h://accountId-5086-tunnelId-12988-area-us:a123456@proxyus.starryproxy.com:10000',
+  },
 }

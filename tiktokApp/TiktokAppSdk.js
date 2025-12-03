@@ -226,7 +226,7 @@ class TiktokAppSdk {
       );
 
       const sendBody = sdkResult;
-      const status = sendBody?.status || sendBody?.status_code;
+      const status = sendBody?.status;
       const filterReason = sendBody?.filter_reason;
       const checkMessageRaw =
         sendBody?.check_message || sendBody?.checkMessage || null;
@@ -247,7 +247,9 @@ class TiktokAppSdk {
         data,
         conversationId: finalConvId,
       });
-
+      console.log("[status:]",status === 0)
+      console.log("[filterReason:]",filterReason)
+      console.log("[checkMessage:]",checkMessage.status_code === 7192)
       if (!sendBody) {
         return buildResponse(-1, '发送结果为空', null);
       }
@@ -261,6 +263,10 @@ class TiktokAppSdk {
 
       const cm = checkMessage || {};
       const statusCode = cm.status_code ?? cm.statusCode ?? null;
+
+      if (statusCode === 7192) {
+        return buildResponse(10001, '发送消息成功', {...sendBody,filter_reason: filterReason});
+      }
 
       if (statusCode === 7193) {
         return buildResponse(10001, '重复发送', sendBody);

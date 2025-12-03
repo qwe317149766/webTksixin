@@ -199,12 +199,14 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
     const tableName = 'uni_cookies_1';
     let dbConnection = null;
     let {task} = result.data;
-    
+    const data = result.data || {};
+    const cookieId = data.cookieId || result.cookieId;
+    console.log('cookieId:',cookieId,"code:",data.code)
     const taskIdFromResult = task.taskId;
     console.log('taskIdFromResult:',taskIdFromResult)
     try {
       dbConnection = await mysqlPool.getConnection();
-      if (result.code === 0) {
+      if (data.code === 0) {
         taskRetryCounts.delete(getRetryKey(task.taskId, task.uid));
         const markResult = await TaskStore.markTaskSuccess(taskIdFromResult);
         if (!markResult.success) {
@@ -215,19 +217,23 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
         console.log(
           `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 待私信总数 -1 成功`
         );
-        try {
-          await dbConnection.execute(
-            `UPDATE ${tableName} SET used_count = used_count + 1, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
-            [result.cookieId]
-          );
-        } catch (updateError) {
-          console.error(
-            `[Task] 更新 Cookie 使用次数失败 (ID: ${result.cookieId}):`,
-            updateError.message
-          );
+        if (cookieId) {
+          try {
+            await dbConnection.execute(
+              `UPDATE ${tableName} SET used_count = used_count + 1, update_time = UNIX_TIMESTAMP() WHERE id = ?`,
+              [cookieId]
+            );
+          } catch (updateError) {
+            console.error(
+              `[Task] 更新 Cookie 使用次数失败 (ID: ${result.cookieId}):`,
+              updateError.message
+            );
+          }
+        } else {
+          console.warn('[Task] 发送成功但缺少 cookieId，跳过使用次数更新');
         }
 
-        await emitTaskProgress(socketManager, result.uid, taskIdFromResult);
+        await emitTaskProgress(socketManager, task.userId, taskIdFromResult);
         if (markResult.remaining <= 0) {
           await stopTaskQueue(task.userId, taskIdFromResult, 'completed');
         }
@@ -255,10 +261,9 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
           }
         }
       } else {
-        const data = result.data || {};
-        const taskIdFromResult = task.taskId;
-        const cookieId = data.cookieId || result.cookieId;
-        console.log('cookieId:',cookieId,data.code)
+       
+      
+      
         // 不同错误码更新 Cookie 状态
         let shouldRequeue = false;
         let tongJs = true
@@ -1102,13 +1107,14 @@ function initSocketServer(httpServer) {
       }
     });
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
       socketManager.unbind(uid, socket.id);
       console.log(`[Socket] 用户 ${uid} 已断开，socketId=${socket.id}`);
       if (!socketManager.hasConnections(uid)) {
         userTaskProcessors.delete(taskKey);
         userTaskStatus.delete(taskKey);
         globalTaskProcessors.delete(taskKey);
+        // await stopTaskQueue(uid, taskId, 'socket_disconnected');
       }
     });
   });

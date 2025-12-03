@@ -88,5 +88,8 @@ module.exports = {
   rateLimit: {
     windowMs: 1 * 60 * 1000,
     max: 100,
-  }
+  },
+  proxy: {
+    socks5: 'socks5h://accountId-5086-tunnelId-12988-area-us:a123456@proxyus.starryproxy.com:10000',
+  },
 };

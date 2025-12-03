@@ -4,6 +4,8 @@ const { TiktokAppSdk } = require('../tiktokApp/TiktokAppSdk');
 
 const DEFAULT_CHANNEL =
   (config.task?.sender?.channel || 'web').toString().toLowerCase();
+const DEFAULT_SOCKS5_PROXY =
+  config.proxy?.socks5 || process.env.DEFAULT_SOCKS5_PROXY || '';
 
 function resolveChannel(preferred) {
   // if (preferred === 1 || preferred === '1') {
@@ -57,6 +59,7 @@ async function sendViaApp({ receiverId, messageData, cookieData, proxy }) {
 
 async function sendPrivateMessage(options = {}) {
   const channel = resolveChannel(options.sendType);
+  const proxyToUse = options.proxy || DEFAULT_SOCKS5_PROXY || null;
   if (channel === 'app') {
     const cookieData =
       options.cookieObject && Object.keys(options.cookieObject).length > 0
@@ -67,12 +70,19 @@ async function sendPrivateMessage(options = {}) {
       receiverId: options.receiverId,
       messageData: options.messageData ?? options.textMsg ?? '',
       cookieData,
-      proxy: options.proxy,
+      proxy: proxyToUse,
     });
     return { ...result, channel };
   }
 
-  const result = await sendViaWeb(options.requestData || {});
+  const requestData = {
+    ...(options.requestData || {}),
+  };
+  if (!requestData.proxy && proxyToUse) {
+    requestData.proxy = proxyToUse;
+  }
+
+  const result = await sendViaWeb(requestData);
   return { ...result, channel };
 }
 
