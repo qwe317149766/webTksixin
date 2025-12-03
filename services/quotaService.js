@@ -162,10 +162,10 @@ async function getPayConfigFromDB(uid) {
         acc[curr.menu_name] = typeof value === 'bigint' ? Number(value) : (Number(value) || value);
         return acc;
       }, {});
-      proxy_price = Number(systemConfig.proxy_price) || 100     //消耗100积分 
+      proxy_price = Number(systemConfig.proxy_price) || 0     //消耗100积分 
       unit_proxy = Number(systemConfig.unit_proxy) || 10000     //每一万代理
-      unit_sixin = Number(systemConfig.unit_sixin) || 1         //每条私信
-      sixin_price = Number(systemConfig.sixin_price) || 1    //等于积分
+      unit_sixin = Number(systemConfig.unit_sixin) || 10000         //每条私信
+      sixin_price = Number(systemConfig.sixin_price) || 10000    //等于积分
       unit_score = Number(systemConfig.unit_score) || 1      //每积分
       score_price = Number(systemConfig.score_price) || 0.03 //等于3分钱
     } 
