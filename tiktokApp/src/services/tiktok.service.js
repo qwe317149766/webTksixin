@@ -429,6 +429,7 @@ class TikTokService {
         }
 
         const proxyUidOverride = options.proxyUid !== undefined ? options.proxyUid : proxyUid;
+        console.log("proxyUidOverride:",proxyUidOverride)
         const response = await this.sdk.post(finalUrl, data, headers, proxyUidOverride || null);
         const responseHeaders = response.headers || {};
         let bodyBuffer = Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body || '');
