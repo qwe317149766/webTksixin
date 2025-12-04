@@ -10,6 +10,7 @@ const mysqlPool = require('../config/database');
 const QuotaService = require('./quotaService');
   // 从 Redis 获取任务信息（如果 batchInfo 中没有完整信息）
 const redis = require('../config/redis');
+const { updateTaskCache } = require('./taskCacheService');
 const BATCH_SIZE = config.task?.batchSize || 10;
 const MAX_TASK_RETRY = config.task?.maxRetries || 3;
 const TASK_TOTAL_PREFIX = 'task:total';
@@ -27,6 +28,21 @@ function getTaskTotalKey(taskId) {
 function getTaskProgressKey(taskId) {
   if (!taskId) throw new Error('taskId 不能为空');
   return `${TASK_PROGRESS_PREFIX}:${taskId}`;
+}
+
+function markTaskLastSuccessAt(taskId) {
+  if (!taskId) {
+    return;
+  }
+  updateTaskCache(taskId, (payload = {}) => {
+    const now = Date.now();
+    payload.lastSuccessAt = now;
+    payload.lastSuccessAtISO = new Date(now).toISOString();
+    if (!payload.firstSuccessAt) {
+      payload.firstSuccessAt = now;
+    }
+    return payload;
+  });
 }
 
 const successUidDir = path.resolve(__dirname, '../public/success-uids');
@@ -278,6 +294,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
 
         logSuccessUidAsync(task.userId, taskIdFromResult, task.uid || result.uid);
         await emitTaskProgress(socketManager, task.userId, taskIdFromResult);
+        markTaskLastSuccessAt(taskIdFromResult);
         if (markResult.remaining <= 0) {
           await stopTaskQueue(task.userId, taskIdFromResult, 'completed');
         }

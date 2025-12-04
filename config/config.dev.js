@@ -5,6 +5,7 @@ module.exports = {
     concurrency: 10,
     lowThreshold: 50,
     needMoreThrottleMs: 10000,
+    orderTimeoutMs: 5 * 60 * 1000,
     sender: {
       channel: 'app',
     },

@@ -90,6 +90,7 @@ module.exports = {
       priority0Ratio: 6/10, // priority_code=0 的比例
     },
     needMoreThrottleMs: 100,
+    orderTimeoutMs: 5 * 60 * 1000,
     sender: {
       channel: 'app',
     }

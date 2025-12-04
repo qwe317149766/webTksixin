@@ -14,6 +14,7 @@ const CookiesQueue = require('./utils/cookiesQueue');
 const { updateCookieStatus, getNormalCookies } = require('./utils/cookieStatusUpdater');
 const TaskStore = require('./utils/taskStore');
 const { initSocketServer, triggerTaskProcessing, stopTaskQueue } = require('./services/socketService');
+const { getTaskCache } = require('./services/taskCacheService');
 const MessageSender = require('./services/messageSender');
 const Response = require('./utils/response');
 const { verifyToken } = require('./services/authService');
@@ -853,6 +854,7 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
     const cookieTable = getUserCookieTableName(userId);
 
     //将提交的信息缓存到redis 
+    const taskCreatedAt = Date.now();
     await redis.setex(`task:${taskId}`, 86400, JSON.stringify({
       userId,
       total: normalizedTotal,
@@ -868,7 +870,9 @@ app.post('/api/v1/tk-task/submit', async (req, res) => {
       sendCost,
       billId,
       status: 'frozen', // 已冻结
-      message: '余额扣减成功，已冻结待结算'
+      message: '余额扣减成功，已冻结待结算',
+      createdAt: taskCreatedAt,
+      lastSuccessAt: null,
     }));
 
     return Response.success(res, { 
@@ -1140,6 +1144,54 @@ app.get('/api/v1/bills', async (req, res) => {
       taskId,
     });
 
+    const orderTimeoutMs = Number(config.task?.orderTimeoutMs) || 5 * 60 * 1000;
+    const bills = Array.isArray(result.list) ? result.list : [];
+    const now = Date.now();
+
+    await Promise.all(
+      bills.map(async (bill) => {
+        const billTaskId = bill.taskId;
+        bill.timeoutThresholdMs = orderTimeoutMs;
+        bill.lastSuccessAt = null;
+        bill.lastSuccessAtISO = null;
+        bill.lastActivityAt = null;
+        bill.lastActivityAtISO = null;
+        bill.isTimeout = false;
+        bill.canSettle = Number(bill.status) === 1;
+
+        if (!billTaskId) {
+          return;
+        }
+
+        const cache = await getTaskCache(billTaskId);
+        const lastSuccessAt = Number(cache?.lastSuccessAt || 0);
+        const createdAt = Number(cache?.createdAt || 0);
+
+        if (lastSuccessAt) {
+          bill.lastSuccessAt = lastSuccessAt;
+          bill.lastSuccessAtISO = new Date(lastSuccessAt).toISOString();
+        }
+
+        bill.lastActivityAt = lastSuccessAt || null;
+        bill.lastActivityAtISO = lastSuccessAt
+          ? new Date(lastSuccessAt).toISOString()
+          : null;
+
+        const statusNum = Number(bill.status);
+        const isPendingBill = statusNum === 0;
+        const hasTimedOut =
+          isPendingBill &&
+          orderTimeoutMs > 0 &&
+          lastSuccessAt > 0 &&
+          now - lastSuccessAt >= orderTimeoutMs;
+
+        bill.isTimeout = hasTimedOut;
+        if (hasTimedOut) {
+          bill.canSettle = true;
+        }
+      })
+    );
+
     return Response.success(res, result, '查询成功', 0);
   } catch (error) {
     console.error('获取账单列表失败:', error);
@@ -1196,13 +1248,46 @@ app.post('/api/v1/bills/settle', async (req, res) => {
     if (!bill) {
       return Response.error(res, '未找到对应的私信账单', -1, null, 404);
     }
-    if (Number(bill.status) !== 1) {
-      return Response.error(res, '账单状态不可结算', -1, null, 400);
-    }
+    const orderTimeoutMs = Number(config.task?.orderTimeoutMs) || 5 * 60 * 1000;
+    const cache = await getTaskCache(taskId);
+    const lastSuccessAt = Number(cache?.lastSuccessAt || 0);
+    const createdAt = Number(cache?.createdAt || 0);
+    const fallbackTs = bill.update_time
+      ? Number(bill.update_time) * 1000
+      : bill.create_time
+        ? Number(bill.create_time) * 1000
+        : 0;
+    const referenceTs = lastSuccessAt || createdAt || fallbackTs;
+    const now = Date.now();
+    const timedOut =
+      orderTimeoutMs > 0 &&
+      referenceTs > 0 &&
+      now - referenceTs >= orderTimeoutMs;
 
     let completedNum = Number(bill.complate_num || 0);
     let syncedFromRedis = false;
     let queueStopped = false;
+
+    if (Number(bill.status) !== 1) {
+      if (timedOut) {
+        const stopResult = await stopTaskQueue(user.uid, taskId, 'settle_timeout', {
+          markPendingSettlement: true,
+          cleanupQueue: true,
+          cleanupTaskStats: true,
+        });
+        queueStopped = Boolean(stopResult?.stopped);
+        const refreshedBill = await QuotaService.getBillByTask(user.uid, taskId);
+        if (!refreshedBill || Number(refreshedBill.status) !== 1) {
+          return Response.error(res, '自动停止后账单状态仍不可结算', -1, null, 400);
+        }
+        bill.status = refreshedBill.status;
+        bill.complate_num = refreshedBill.complate_num;
+        completedNum = Number(refreshedBill.complate_num || stopResult?.stats?.success || 0);
+        syncedFromRedis = true;
+      } else {
+        return Response.error(res, '账单状态不可结算', -1, null, 400);
+      }
+    }
 
     // if (!completedNum || forceSync) {
     //   await stopTaskQueue(user.uid, taskId, 'bill_settlement');

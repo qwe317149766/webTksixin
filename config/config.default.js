@@ -14,6 +14,7 @@ module.exports = {
     concurrency: 10, // 并发数
     lowThreshold: 50, // 低阈值
     needMoreThrottleMs: 10000, // needMore 最小间隔
+    orderTimeoutMs: 5 * 60 * 1000, // 订单超时时间（毫秒）
     cookieRatio: {
       multiplier: 1.5, // cookies 总数倍数（相对于 tasks.length）
       priority1Ratio: 2/3, // priority_code=1 的比例
