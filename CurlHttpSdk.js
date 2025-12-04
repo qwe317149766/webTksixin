@@ -239,7 +239,11 @@ class CurlHttpSdk extends EventEmitter {
 
     _expandPoolIfNeeded(preferredProxy = null) {
         if (!this._canGrowPool()) {
-            return false;
+            if (this.connectionPool.length === 0) {
+                return false;
+            }
+            const randomConn = this.connectionPool[Math.floor(Math.random() * this.connectionPool.length)];
+            return Boolean(randomConn);
         }
         const demand = this.activeRequestsTotal + this.pendingQueue.length;
         if (demand <= this.connectionPool.length && this.connectionPool.length >= CONNECTION_POOL_CONFIG.INITIAL_SIZE) {
@@ -319,11 +323,15 @@ class CurlHttpSdk extends EventEmitter {
         );
 
         if (!usableConnections.length) {
-            const created = this._addConnection(this.defaultProxy);
-            if (created) {
-                return created;
-            }
-            return null;
+        const created = this._addConnection(this.defaultProxy);
+        if (created) {
+            return created;
+        }
+        if (this.connectionPool.length > 0) {
+            const randomConn = this.connectionPool[Math.floor(Math.random() * this.connectionPool.length)];
+            return randomConn;
+        }
+        return null;
         }
 
         if (!proxyID) {
@@ -346,8 +354,16 @@ class CurlHttpSdk extends EventEmitter {
         const newConn = this._addConnection(this.defaultProxy);
         if (newConn) {
             newConn.proxyID = proxyID;
+            return newConn;
         }
-        return newConn;
+        if (this.connectionPool.length > 0) {
+            const randomConn = this.connectionPool[Math.floor(Math.random() * this.connectionPool.length)];
+            if (!randomConn.proxyID) {
+                randomConn.proxyID = proxyID;
+            }
+            return randomConn;
+        }
+        return null;
     }
 
     refreshConnectionPool() {

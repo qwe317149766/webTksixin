@@ -100,7 +100,7 @@ module.exports = {
   },
   curl: {
     modifyProxyUsername: false,
-    maxRequestsPerConnection: 20,
+    maxRequestsPerConnection: 4,
     healthCheckIntervalMs: 60000,
     queueBackoffBaseMs: 20,
     queueBackoffMaxMs: 2000,
