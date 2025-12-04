@@ -27,6 +27,18 @@ function parseCookieString(cookieStr) {
   if (!cookieStr || typeof cookieStr !== 'string') {
     return {};
   }
+  const trimmed = cookieStr.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch (err) {
+      // fall through to semi-colon parsing
+    }
+  }
+
   const cookieObj = {};
   cookieStr.split(';').forEach(part => {
     const [rawKey, ...rawValue] = part.split('=');
@@ -38,6 +50,20 @@ function parseCookieString(cookieStr) {
     cookieObj[key] = rawValue.join('=').trim();
   });
   return cookieObj;
+}
+
+function ensureCookieObject(cookieObject, cookiesText) {
+  if (cookieObject && typeof cookieObject === 'object' && !Array.isArray(cookieObject)) {
+    return cookieObject;
+  }
+  const sourceText =
+    (typeof cookieObject === 'string' && cookieObject.trim()) ||
+    (typeof cookiesText === 'string' && cookiesText.trim()) ||
+    '';
+  if (!sourceText) {
+    return {};
+  }
+  return parseCookieString(sourceText);
 }
 
 async function sendViaWeb(requestData) {
@@ -61,12 +87,12 @@ async function sendViaApp({ receiverId, messageData, cookieData, proxy }) {
 
 async function sendPrivateMessage(options = {}) {
   const channel = resolveChannel(options.sendType);
-  const proxyToUse = options.proxy || DEFAULT_SOCKS5_PROXY || null;
+  //const proxyToUse = options.proxy || DEFAULT_SOCKS5_PROXY || null;
+  const proxyToUse = DEFAULT_SOCKS5_PROXY
+  console.log('proxyToUse:',proxyToUse)
+  console.log('channel:',channel)
   if (channel === 'app') {
-    const cookieData =
-      options.cookieObject && Object.keys(options.cookieObject).length > 0
-        ? options.cookieObject
-        : parseCookieString(options.cookiesText || '');
+    const cookieData = ensureCookieObject(options.cookieObject, options.cookiesText);
     const result = await sendViaApp({
       receiverId: options.receiverId,
       messageData: options.messageData ?? options.textMsg ?? '',
@@ -76,6 +102,7 @@ async function sendPrivateMessage(options = {}) {
     return { ...result, channel };
   }
 
+  const cookieData = ensureCookieObject(options.cookieObject, options.cookiesText);
   const requestData = {
     ...(options.requestData || {}),
   };
@@ -87,13 +114,14 @@ async function sendPrivateMessage(options = {}) {
   const createSequenceId = Math.floor(Math.random() * 2001) + 10000;
   const sendSequenceId = createSequenceId + 1;
   const result = await sendViaWeb({
-    cookieParams:options.cookieObject,
-    toUid:options.receiverId,
-    textMsg:options.messageData,
-    proxy:proxyToUse,
-    device_id:options.cookieObject.device_id,
-    createSequenceId:createSequenceId,
-    sendSequenceId:sendSequenceId,
+    cookieParamsJson: cookieData,
+    cookieParams: cookieData,
+    toUid: options.receiverId,
+    textMsg: options.messageData ?? options.textMsg ?? '',
+    proxy: proxyToUse,
+    device_id: cookieData.device_id,
+    createSequenceId: createSequenceId,
+    sendSequenceId: sendSequenceId,
   });
   return { ...result, channel };
 }

@@ -81,9 +81,9 @@ module.exports = {
     max: 100000,
   },
   task: {
-    batchSize: 100, // 批量处理任务数量
-    concurrency: 100, // 并发数
-    lowThreshold: 200, // 低阈值
+    batchSize: 200, // 批量处理任务数量
+    concurrency: 200, // 并发数
+    lowThreshold: 400, // 低阈值
     cookieRatio: {
       multiplier: 1, // cookies 总数倍数（相对于 tasks.length）
       priority1Ratio: 4/10, // priority_code=1 的比例

@@ -78,6 +78,18 @@ async function readCookieLines(filePath) {
   return lines;
 }
 
+async function appendLines(filePath, lines = []) {
+  if (!lines.length) {
+    return;
+  }
+  const absolutePath = path.resolve(process.cwd(), filePath);
+  await fs.promises.appendFile(
+    absolutePath,
+    lines.map(line => `${line}\n`).join(''),
+    'utf8'
+  );
+}
+
 async function main() {
   const cookiesFile = DEFAULT_COOKIES_FILE;
   const receiverId = DEFAULT_RECEIVER_ID;
@@ -85,6 +97,8 @@ async function main() {
   const proxy = DEFAULT_PROXY || null;
 
   const cookieList = await readCookieLines(cookiesFile);
+  const successCookies = [];
+  const failCookies = [];
 
   console.log(`共 ${cookieList.length} 个账号，将向用户 ${receiverId} 发送同一条私信。`);
 
@@ -110,6 +124,7 @@ async function main() {
 
       if (status === 0) {
         successCount += 1;
+        successCookies.push(JSON.stringify(cookieData));
       }
       if (filterReason === 0) {
         filterPassed += 1;
@@ -121,8 +136,16 @@ async function main() {
       );
     } catch (error) {
       failCount += 1;
+      failCookies.push(JSON.stringify(cookieData));
       console.error(`[${index + 1}/${cookieList.length}] ❌ 失败 => ${label}`, error.message);
     }
+  }
+
+  if (successCookies.length) {
+    await appendLines(path.resolve(__dirname, 'success-ck.txt'), successCookies);
+  }
+  if (failCookies.length) {
+    await appendLines(path.resolve(__dirname, 'fail-ck.txt'), failCookies);
   }
 
   console.log('全部任务处理完成。');

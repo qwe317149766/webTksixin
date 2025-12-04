@@ -18,12 +18,25 @@ try {
 }
 
 const EventEmitter = require('events');
+const config = require('./config');
 const Log = console;
+const KEEP_ALIVE_CONFIG = config.curl?.keepAlive || {};
+const MAX_CONCURRENCY =
+    (config.curl && typeof config.curl.maxConcurrency === 'number'
+        ? config.curl.maxConcurrency
+        : 100);
+const DEFAULT_TIMEOUT_SECONDS =
+    (config.curl && typeof config.curl.requestTimeoutSeconds === 'number'
+        ? config.curl.requestTimeoutSeconds
+        : 35);
+
 
 const CONNECTION_POOL_CONFIG = {
-    INITIAL_SIZE: 50,						//初始化50个连接	
-    MAX_FAILURES_PER_CONNECTION: 100,		//每个IP最多使用100次	
-    CONNECTION_IDLE_TIMEOUT: 300000 		//每个IP只能使用5分钟
+    INITIAL_SIZE: config.curl?.connectionPool?.initialSize ?? 20,
+    PREWARM_BATCH_SIZE: config.curl?.connectionPool?.prewarmBatchSize ?? 5,
+    MAX_FAILURES_PER_CONNECTION: config.curl?.connectionPool?.maxFailures ?? 3,
+    CONNECTION_IDLE_TIMEOUT: config.curl?.connectionPool?.idleTimeoutMs ?? 300000,
+    REFRESH_INTERVAL: config.curl?.connectionPool?.refreshIntervalMs ?? 600000,
 };
 
 class CurlHttpSdk extends EventEmitter {
@@ -39,6 +52,13 @@ class CurlHttpSdk extends EventEmitter {
         this.connectionPool = [];
         this.nextConnectionId = 0;
         this.modifyProxyUsername = true;
+        this.maxConcurrency =
+            typeof options.maxConcurrency === 'number'
+                ? options.maxConcurrency
+                : MAX_CONCURRENCY;
+        this.activeRequestsTotal = 0;
+        this.pendingQueue = [];
+        this.baseProxies = [];
 
         // 初始化连接池
         if (this.proxyPool.length) {
@@ -67,7 +87,12 @@ class CurlHttpSdk extends EventEmitter {
             }
 
             if (error) {
-                if (conn) conn.failureCount += 1;
+                if (conn) {
+                    const isHandshakeError =
+                        typeof error.message === 'string' &&
+                        error.message.toLowerCase().includes('handshake');
+                    this._handleConnectionFailure(conn, isHandshakeError);
+                }
                 callback.reject(new Error(`Request failed: ${error.message}, code: ${errorCode}`));
             } else {
 				const key = this.handles.indexOf(handle);
@@ -84,6 +109,10 @@ class CurlHttpSdk extends EventEmitter {
 						headers[name.toLowerCase()] = value;
 					}
 				}
+                if (conn) {
+                    conn.failureCount = 0;
+                    conn.isHealthy = true;
+                }
                 callback.resolve({
                     ok: responseCode >= 200 && responseCode < 300,
                     status: responseCode,
@@ -106,6 +135,7 @@ class CurlHttpSdk extends EventEmitter {
                 this.handlesHeaders.pop();
             }
             this.callbacks.delete(handle);
+            this._finalizeQueuedRequest();
         });
     }
 
@@ -138,24 +168,25 @@ class CurlHttpSdk extends EventEmitter {
 	}
 
 	initializeConnectionPool(baseProxyUrl) {
-        if (!this.connectionPool.some(c => c.originalProxyUrl === baseProxyUrl)) {
-            const pool = Array.from({ length: CONNECTION_POOL_CONFIG.INITIAL_SIZE },
-			() => this.createConnection(baseProxyUrl)
-            );
-            this.connectionPool.push(...pool);
-            Log.info(`[CurlHttpSdk] 初始化代理池 (${baseProxyUrl})，初始大小: ${pool.length}`);
+        if (!baseProxyUrl) {
+            return;
         }
+        if (!this.baseProxies.includes(baseProxyUrl)) {
+            this.baseProxies.push(baseProxyUrl);
+        }
+        const existing = this.connectionPool.filter(c => c.originalProxyUrl === baseProxyUrl);
+        if (existing.length >= CONNECTION_POOL_CONFIG.INITIAL_SIZE) {
+            return;
+        }
+        const missing = CONNECTION_POOL_CONFIG.INITIAL_SIZE - existing.length;
+        const pool = Array.from({ length: missing }, () => this.createConnection(baseProxyUrl));
+        this.connectionPool.push(...pool);
+        Log.info(`[CurlHttpSdk] 初始化代理池 (${baseProxyUrl})，补充连接: ${pool.length}`);
     }
 
     startHealthCheck() {
         this.healthCheckInterval = setInterval(() => {
-            const now = Date.now();
-            this.connectionPool = this.connectionPool.filter(c => {
-                const healthy = c.failureCount < CONNECTION_POOL_CONFIG.MAX_FAILURES_PER_CONNECTION &&
-                    (c.activeRequests > 0 || now - c.lastUsedAt <= CONNECTION_POOL_CONFIG.CONNECTION_IDLE_TIMEOUT);
-                if (!healthy) Log.info(`[CurlHttpSdk] 移除不健康连接 ${c.id}`);
-                return healthy;
-            });
+            this.refreshConnectionPool();
         }, 60000);
     }
 
@@ -190,6 +221,60 @@ class CurlHttpSdk extends EventEmitter {
         return newConn;
     }
 
+    refreshConnectionPool() {
+        const now = Date.now();
+        const before = this.connectionPool.length;
+        this.connectionPool = this.connectionPool.filter((conn) => {
+            const stale = now - conn.createdAt >= CONNECTION_POOL_CONFIG.REFRESH_INTERVAL;
+            const idleTooLong = now - conn.lastUsedAt > CONNECTION_POOL_CONFIG.CONNECTION_IDLE_TIMEOUT;
+            const failedTooMuch =
+                conn.failureCount >= CONNECTION_POOL_CONFIG.MAX_FAILURES_PER_CONNECTION || !conn.isHealthy;
+            const removable = (stale && conn.activeRequests === 0) ||
+                (idleTooLong && conn.activeRequests === 0) ||
+                failedTooMuch;
+            if (removable) {
+                Log.info(`[CurlHttpSdk] 回收连接 ${conn.id} (${conn.originalProxyUrl})`);
+            }
+            return !removable;
+        });
+        const removed = before - this.connectionPool.length;
+        if (removed > 0) {
+            Log.info(`[CurlHttpSdk] 已清理 ${removed} 个连接`);
+        }
+
+        this.baseProxies.forEach((proxy) => this.ensureMinimumConnections(proxy));
+    }
+
+    ensureMinimumConnections(proxyUrl) {
+        if (!proxyUrl) {
+            return;
+        }
+        const healthyConnections = this.connectionPool.filter(
+            (conn) => conn.originalProxyUrl === proxyUrl && conn.isHealthy
+        ).length;
+        if (healthyConnections >= CONNECTION_POOL_CONFIG.INITIAL_SIZE) {
+            return;
+        }
+        const missing = CONNECTION_POOL_CONFIG.INITIAL_SIZE - healthyConnections;
+        const batch = Math.min(CONNECTION_POOL_CONFIG.PREWARM_BATCH_SIZE, missing);
+        for (let i = 0; i < batch; i += 1) {
+            const conn = this.createConnection(proxyUrl);
+            this.connectionPool.push(conn);
+        }
+        Log.info(`[CurlHttpSdk] 预热代理 ${proxyUrl}，新增 ${batch} 个连接`);
+    }
+
+    _handleConnectionFailure(connection, forceUnhealthy = false) {
+        if (!connection) {
+            return;
+        }
+        connection.failureCount += 1;
+        if (forceUnhealthy || connection.failureCount >= CONNECTION_POOL_CONFIG.MAX_FAILURES_PER_CONNECTION) {
+            connection.isHealthy = false;
+            Log.warn(`[CurlHttpSdk] 标记连接 ${connection.id} (${connection.originalProxyUrl}) 为不可用`);
+        }
+    }
+
     // =================== 请求处理 ===================
     _parseProxy(proxyUrl) {
         if (!proxyUrl) return null;
@@ -210,6 +295,21 @@ class CurlHttpSdk extends EventEmitter {
         handle.setOpt('FOLLOWLOCATION', true);
         handle.setOpt('SSL_VERIFYPEER', false);
         handle.setOpt('SSL_VERIFYHOST', false);
+        handle.setOpt('TIMEOUT', DEFAULT_TIMEOUT_SECONDS);
+
+        if (KEEP_ALIVE_CONFIG.enabled !== false) {
+            try {
+                handle.setOpt('TCP_KEEPALIVE', 1);
+                if (KEEP_ALIVE_CONFIG.idleSeconds) {
+                    handle.setOpt('TCP_KEEPIDLE', Number(KEEP_ALIVE_CONFIG.idleSeconds));
+                }
+                if (KEEP_ALIVE_CONFIG.intervalSeconds) {
+                    handle.setOpt('TCP_KEEPINTVL', Number(KEEP_ALIVE_CONFIG.intervalSeconds));
+                }
+            } catch (keepAliveError) {
+                Log.warn('[CurlHttpSdk] 设置 TCP KeepAlive 失败:', keepAliveError.message);
+            }
+        }
 
         if (proxy) {
             handle.setOpt('PROXY', proxy);
@@ -262,51 +362,61 @@ class CurlHttpSdk extends EventEmitter {
 
     request(method, url, headers = {}, body = null, proxyID = null) {
         return new Promise((resolve, reject) => {
-            const connection = this.pickConnection(proxyID);
-            if (connection) {
-                connection.activeRequests += 1;
-            }
-
-            const handle = this._createEasy(
-                method,
-                url,
-                headers,
-                body,
-                connection?.proxyUrl || null,
-                connection
-            );
-
-            const cleanupOnFailure = () => {
-                const idx = this.handles.indexOf(handle);
-                if (idx >= 0) {
-                    this.handles.splice(idx, 1);
-                    this.handlesData.splice(idx, 1);
-                    this.handlesHeaders.splice(idx, 1);
-                } else {
-                    this.handlesData.pop();
-                    this.handlesHeaders.pop();
-                }
-                this.callbacks.delete(handle);
+            const executeRequest = () => {
+                const connection = this.pickConnection(proxyID);
                 if (connection) {
-                    connection.activeRequests = Math.max(0, connection.activeRequests - 1);
+                    connection.activeRequests += 1;
                 }
+
+                const handle = this._createEasy(
+                    method,
+                    url,
+                    headers,
+                    body,
+                    connection?.proxyUrl || null,
+                    connection
+                );
+
+                const cleanupOnFailure = () => {
+                    const idx = this.handles.indexOf(handle);
+                    if (idx >= 0) {
+                        this.handles.splice(idx, 1);
+                        this.handlesData.splice(idx, 1);
+                        this.handlesHeaders.splice(idx, 1);
+                    } else {
+                        this.handlesData.pop();
+                        this.handlesHeaders.pop();
+                    }
+                    this.callbacks.delete(handle);
+                    if (connection) {
+                        connection.activeRequests = Math.max(0, connection.activeRequests - 1);
+                    }
+                    this._finalizeQueuedRequest();
+                };
+
+                this.handles.push(handle);
+                this.callbacks.set(handle, { resolve, reject });
+
+                setImmediate(() => {
+                    try {
+                        this.multi.addHandle(handle);
+                    } catch (error) {
+                        cleanupOnFailure();
+                        reject(
+                            new Error(
+                                `Failed to add handle to multi: ${error.message || 'unknown error'}`
+                            )
+                        );
+                    }
+                });
             };
 
-            this.handles.push(handle);
-            this.callbacks.set(handle, { resolve, reject });
-
-            setImmediate(() => {
-                try {
-                    this.multi.addHandle(handle);
-                } catch (error) {
-                    cleanupOnFailure();
-                    reject(
-                        new Error(
-                            `Failed to add handle to multi: ${error.message || 'unknown error'}`
-                        )
-                    );
-                }
-            });
+            if (this.activeRequestsTotal >= this.maxConcurrency) {
+                this.pendingQueue.push(executeRequest);
+            } else {
+                this.activeRequestsTotal += 1;
+                executeRequest();
+            }
         });
     }
 
@@ -325,6 +435,19 @@ class CurlHttpSdk extends EventEmitter {
         this.handles = [];
         this.handlesData = [];
         this.callbacks.clear();
+    }
+
+    _finalizeQueuedRequest() {
+        if (this.activeRequestsTotal > 0) {
+            this.activeRequestsTotal -= 1;
+        }
+        if (this.pendingQueue.length > 0) {
+            const nextTask = this.pendingQueue.shift();
+            if (typeof nextTask === 'function') {
+                this.activeRequestsTotal += 1;
+                setImmediate(nextTask);
+            }
+        }
     }
 }
 // 单文件运行并进行测试

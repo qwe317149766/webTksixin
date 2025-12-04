@@ -64,4 +64,20 @@ module.exports = {
   proxy: {
     socks5: '',
   },
+  curl: {
+    keepAlive: {
+      enabled: true,
+      idleSeconds: 60,
+      intervalSeconds: 30,
+    },
+    maxConcurrency: 200,
+    requestTimeoutSeconds: 35,
+    connectionPool: {
+      initialSize: 20,
+      prewarmBatchSize: 5,
+      maxFailures: 3,
+      idleTimeoutMs: 300000,
+      refreshIntervalMs: 600000,
+    },
+  },
 };
