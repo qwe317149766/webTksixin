@@ -704,17 +704,31 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum, options = {
     );
 
     // 从数据库获取 priority_code=0 的 cookies
+    let remainingForPriority0 = Math.max(0, totalCookiesNeeded - priority1Cookies.length);
     const [priority0Cookies] = await dbConnection.execute(
       `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
        FROM ${tableName} 
-     WHERE ${whereClause} AND priority_code = 0
+       WHERE ${whereClause} AND priority_code = 0
        ORDER BY day_count ASC
        LIMIT ?`,
-    [...whereParams, priority0Count]
+      [...whereParams, priority0Count + remainingForPriority0]
     );
 
-    // 合并所有 cookies（优先使用 priority_code=1 的）
-    return [...priority1Cookies, ...priority0Cookies];
+    const combined = [...priority1Cookies, ...priority0Cookies];
+    if (combined.length < totalCookiesNeeded) {
+      const deficit = totalCookiesNeeded - combined.length;
+      const [fallbackCookies] = await dbConnection.execute(
+        `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
+         FROM ${tableName} 
+         WHERE ${whereClause} AND priority_code NOT IN (0, 1)
+         ORDER BY day_count ASC
+         LIMIT ?`,
+        [...whereParams, deficit]
+      );
+      combined.push(...fallbackCookies);
+    }
+
+    return combined;
  }
 
 /**
