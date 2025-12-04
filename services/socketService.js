@@ -205,6 +205,13 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
   // 检查任务状态
   const taskStatus = await TaskStore.getTaskStatus(taskId);
   const currentStatus = taskStatus?.status || 'idle';
+  const taskStats = await TaskStore.getTaskStats(taskId);
+  const remainingCount = Math.max(0, Number(taskStats?.remaining || 0));
+  const configuredConcurrency = config.task?.concurrency || 10;
+  const adjustedConcurrency = Math.max(
+    1,
+    Math.min(configuredConcurrency, remainingCount || configuredConcurrency)
+  );
   
   if (batchRequester) {
     // BatchRequester 已存在，检查状态是否需要重新启动或停止
@@ -229,6 +236,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
       batchRequesterDoneFlags.delete(key);
       batchRequester.start();
     }
+    batchRequester.concurrency = adjustedConcurrency;
     return batchRequester;
   }
 
@@ -244,7 +252,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
 
   batchRequester = new BatchRequester({
     sdk: null, // 函数模式下不需要 SDK
-    concurrency: config.task?.concurrency || 10,
+    concurrency: adjustedConcurrency,
     lowThreshold: config.task?.lowThreshold || 50,
   });
 
@@ -258,6 +266,10 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
     const cookieId = data.cookieId || result.cookieId;
     console.log('cookieId:',cookieId,"code:",data.code)
     const taskIdFromResult = task.taskId;
+    if (stoppedTasks.has(taskIdFromResult)) {
+      console.log(`[Task] 任务 ${taskIdFromResult} 已停止，忽略结果 code=${data.code}`);
+      return;
+    }
     console.log("[data]:",data)
     const tableName =
       data.cookieTable ||
@@ -562,15 +574,22 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
     
     try {
       const hasPending = await TaskStore.hasPendingTasks(taskId);
-      if (hasPending) {
+      const latestStatus = await TaskStore.getTaskStatus(taskId);
+      const canRestart =
+        socketManager.hasConnections(userId) &&
+        latestStatus?.status === 'running' &&
+        !stoppedTasks.has(taskId);
+      if (hasPending && canRestart) {
         console.log(`[BatchRequester] 任务 ${taskId} 在 done 时仍有剩余，尝试重启队列`);
         triggerTaskProcessing(userId, taskId, BATCH_SIZE);
-      } else if (typeof statusUpdater === 'function') {
+      } else if (!hasPending && typeof statusUpdater === 'function') {
         await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
         await stopTaskQueue(userId, taskId, 'completed');
         // 注意：不清理 uidCookieMap，因为每个 uid 在整个系统中只能被分配一次
         // 如果清理了，其他任务可能会再次分配这个 uid，导致重复发送
         // 如果需要清理，应该在任务完全完成且确认不再需要时手动清理
+      } else if (hasPending && !canRestart) {
+        console.log(`[BatchRequester] 任务 ${taskId} 仍有剩余但无法重启（可能已停止或无连接），等待下次触发`);
       }
     } catch (error) {
       console.error('[BatchRequester] done 检查任务状态失败:', error);
