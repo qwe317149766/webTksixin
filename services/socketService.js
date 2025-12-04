@@ -187,6 +187,7 @@ const cookieError10001Counts = new Map(); // key: `${cookieId}` -> number
 
 // 全局任务处理器映射，用于外部触发任务处理
 const globalTaskProcessors = new Map(); // key: `${userId}:${taskId}` -> triggerFn
+const stoppedTasks = new Set(); // 记录已停止/完成的任务
 let sharedSocketManager = null;
 
 function getTaskRequesterKey(userId, taskId) {
@@ -239,6 +240,7 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
 
   // 清理旧的 done 标志（如果有），确保新的 BatchRequester 可以正常触发 done 事件
   batchRequesterDoneFlags.delete(key);
+  stoppedTasks.delete(taskId);
 
   batchRequester = new BatchRequester({
     sdk: null, // 函数模式下不需要 SDK
@@ -1355,6 +1357,10 @@ function initSocketServer(httpServer) {
  */
 function triggerTaskProcessing(userId, taskId, demand = 1, options = {}) {
   const taskKey = `${userId}:${taskId}`;
+  if (stoppedTasks.has(taskId)) {
+    console.log(`[Task] 任务 ${taskId} 已停止或完成，忽略触发请求`);
+    return false;
+  }
   const triggerFn = globalTaskProcessors.get(taskKey);
   
   if (triggerFn) {
@@ -1446,6 +1452,8 @@ async function stopTaskQueue(userId, taskId, reason = 'manual', options = {}) {
       reason,
     });
   }
+
+  stoppedTasks.add(taskId);
 
   return { stopped: true, stats: cachedStats };
 }
