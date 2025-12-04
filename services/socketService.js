@@ -1135,7 +1135,12 @@ function createTaskProcessor(socketManager, userId, taskId, statusChecker, statu
           break;
         }
 
-        const batchSize = Math.min(BATCH_SIZE, pendingDemand);
+        const taskStats = await TaskStore.getTaskStats(taskId);
+        const remainingTasks = Math.max(0, Number(taskStats?.remaining || 0));
+        const batchSize = Math.max(0, Math.min(BATCH_SIZE, pendingDemand, remainingTasks));
+        if (batchSize === 0) {
+          break;
+        }
         const tasks = await TaskStore.dequeueTask(userId, taskId, batchSize);
 
         if (!tasks || tasks.length === 0) {
@@ -1151,11 +1156,15 @@ function createTaskProcessor(socketManager, userId, taskId, statusChecker, statu
             }
             break;
           }
-          await TaskStore.waitForQueueReplenish(taskId, 1000);
+          needMoreNotifier(pendingDemand);
+          await new Promise((resolve) => setTimeout(resolve, 1000));
           continue;
         }
 
         pendingDemand = Math.max(0, pendingDemand - tasks.length);
+        if (pendingDemand > (config.task?.concurrency || 10) * 3) {
+          pendingDemand = (config.task?.concurrency || 10) * 3;
+        }
         if (
           pendingDemand > 0 &&
           typeof needMoreNotifier === 'function' &&
