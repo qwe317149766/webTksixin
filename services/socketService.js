@@ -12,7 +12,7 @@ const QuotaService = require('./quotaService');
 const redis = require('../config/redis');
 const { updateTaskCache } = require('./taskCacheService');
 const BATCH_SIZE = config.task?.batchSize || 10;
-const MAX_TASK_RETRY = config.task?.maxRetries || 3;
+const MAX_TASK_RETRY = config.task?.maxRetries || 1;
 const TASK_TOTAL_PREFIX = 'task:total';
 const TASK_PROGRESS_PREFIX = 'task:progress';
 

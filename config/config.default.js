@@ -71,7 +71,7 @@ module.exports = {
       intervalSeconds: 30,
     },
     maxConcurrency: 200,
-    requestTimeoutSeconds: 35,
+    requestTimeoutSeconds:90,
     connectionPool: {
       initialSize: 20,
       prewarmBatchSize: 5,
