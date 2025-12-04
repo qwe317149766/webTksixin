@@ -525,6 +525,9 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
     if (typeof onNeedMore === 'function') {
       onNeedMore(neededLength);
     }
+    if (Number.isFinite(neededLength) && neededLength > 0) {
+      triggerTaskProcessing(userId, taskId, Math.floor(neededLength));
+    }
   });
 
   batchRequester.on('done', async () => {
@@ -619,7 +622,7 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum, options = {
       priority0Ratio: 1/3,
     };
 
-  const whereParts = ['status = 1', 'day_count < 100'];
+  const whereParts = ['status = 1', 'day_count < 40'];
   const whereParams = [];
 
   const whereClause = whereParts.join(' AND ');
