@@ -1031,6 +1031,80 @@ app.get('/api/v1/tasks/:taskId/success-uids', async (req, res) => {
 });
 
 /**
+ * 停止任务队列（清空队列 & 标记待结算）
+ * POST /api/v1/tasks/stop
+ * body/query: { taskId, reason? }
+ */
+app.post('/api/v1/tasks/stop', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || req.headers['x-token'];
+    let token = null;
+    if (authHeader) {
+      token = authHeader.startsWith('Bearer ') ? authHeader.substring(7) : authHeader;
+    }
+    if (!token && req.body?.token) {
+      token = req.body.token;
+    }
+    if (!token && req.query?.token) {
+      token = req.query.token;
+    }
+    if (!token) {
+      return Response.error(res, '未登录', -1, null, 401);
+    }
+
+    const user = await verifyToken(token);
+    if (!user || !user.uid) {
+      return Response.error(res, 'token 无效或已过期', -1, null, 401);
+    }
+
+    const rawTaskId =
+      req.body?.taskId !== undefined
+        ? req.body.taskId
+        : req.query?.taskId !== undefined
+          ? req.query.taskId
+          : '';
+    const taskId = String(rawTaskId || '').trim();
+    if (!taskId) {
+      return Response.error(res, 'taskId 不能为空', -1, null, 400);
+    }
+
+    const reasonRaw = req.body?.reason ?? req.query?.reason;
+    const stopReason = String(reasonRaw || 'api_stop_and_settle').trim() || 'api_stop_and_settle';
+
+    const taskStatus = await TaskStore.getTaskStatus(taskId);
+    if (taskStatus && taskStatus.userId && String(taskStatus.userId) !== String(user.uid)) {
+      return Response.error(res, '无权操作该任务', -1, null, 403);
+    }
+
+    const stopResult = await stopTaskQueue(user.uid, taskId, stopReason, {
+      markPendingSettlement: true,
+      cleanupQueue: true,
+      cleanupTaskStats: true,
+    });
+
+    const stats = stopResult?.stats || null;
+    const completedNum = Number(stats?.success || 0);
+
+    return Response.success(
+      res,
+      {
+        taskId,
+        queueStopped: Boolean(stopResult?.stopped),
+        completedNum,
+        stats,
+        stopReason,
+        status: 'pending_settlement',
+      },
+      '任务已停止，待结算',
+      0
+    );
+  } catch (error) {
+    console.error('停止任务失败:', error);
+    return Response.error(res, error.message || '停止任务失败', -1, null, 500);
+  }
+});
+
+/**
  * 账单列表
  * GET /api/v1/bills?page=1&pageSize=20&status=&taskId=
  */

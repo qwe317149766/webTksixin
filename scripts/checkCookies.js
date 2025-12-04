@@ -427,16 +427,36 @@ async function checkCookies() {
         }
       }
 
-      // 并发处理当前批次，但等待全部任务完成后再进入下一批
+      // 并发处理当前批次：维持“池”中始终有 concurrency 个任务（若记录不足则降为记录数）
       const tasksWithIndex = records.map((record, index) => ({ record, index }));
-      const chunkSize = Math.max(1, Math.floor(concurrency));
+      const effectiveConcurrency = Math.max(
+        1,
+        Math.min(Math.floor(concurrency) || 1, tasksWithIndex.length)
+      );
 
-      for (let start = 0; start < tasksWithIndex.length; start += chunkSize) {
-        const chunk = tasksWithIndex.slice(start, start + chunkSize);
-        await Promise.all(
-          chunk.map(({ record, index }) => processRecord(record, index))
+      if (effectiveConcurrency < concurrency) {
+        console.log(
+          `⚖️  本批记录数 ${tasksWithIndex.length} 少于配置并发 ${concurrency}，实际并发降为 ${effectiveConcurrency}`
         );
+      } else {
+        console.log(`🚀 并发池已就绪，活跃并发: ${effectiveConcurrency}`);
       }
+
+      let nextTaskIndex = 0;
+      async function worker() {
+        while (true) {
+          const currentIndex = nextTaskIndex++;
+          if (currentIndex >= tasksWithIndex.length) {
+            break;
+          }
+          const { record, index } = tasksWithIndex[currentIndex];
+          await processRecord(record, index);
+        }
+      }
+
+      await Promise.all(
+        Array.from({ length: effectiveConcurrency }, () => worker())
+      );
 
       console.log(`\n✅ 本批次处理完成 (${records.length} 条)`);
 

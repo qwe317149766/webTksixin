@@ -41,6 +41,7 @@ function parseCookieString(cookieStr) {
 }
 
 async function sendViaWeb(requestData) {
+  console.log('requestData:',requestData,"1111")
   return sendText(requestData);
 }
 
@@ -66,7 +67,6 @@ async function sendPrivateMessage(options = {}) {
       options.cookieObject && Object.keys(options.cookieObject).length > 0
         ? options.cookieObject
         : parseCookieString(options.cookiesText || '');
-    console.log("proxyToUse:",proxyToUse)
     const result = await sendViaApp({
       receiverId: options.receiverId,
       messageData: options.messageData ?? options.textMsg ?? '',
@@ -82,8 +82,19 @@ async function sendPrivateMessage(options = {}) {
   if (!requestData.proxy && proxyToUse) {
     requestData.proxy = proxyToUse;
   }
-
-  const result = await sendViaWeb(requestData);
+  console.log('options:',options)
+  //createSequenceId 随机从10000到12000
+  const createSequenceId = Math.floor(Math.random() * 2001) + 10000;
+  const sendSequenceId = createSequenceId + 1;
+  const result = await sendViaWeb({
+    cookieParams:options.cookieObject,
+    toUid:options.receiverId,
+    textMsg:options.messageData,
+    proxy:proxyToUse,
+    device_id:options.cookieObject.device_id,
+    createSequenceId:createSequenceId,
+    sendSequenceId:sendSequenceId,
+  });
   return { ...result, channel };
 }
 

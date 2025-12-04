@@ -19,7 +19,8 @@ const MessageSender = require('../services/messageSender');
 
 // === 可根据需求修改的固定参数 ===
 const DEFAULT_COOKIES_FILE = path.resolve(__dirname, 'cookies.txt');
-const DEFAULT_RECEIVER_ID = '7231173793783251965';
+const DEFAULT_RECEIVER_ID = '7502761795141452807';
+// const DEFAULT_RECEIVER_ID = '7231173793783251965';
 const DEFAULT_MESSAGE = 'Hello from batch script';
 const DEFAULT_PROXY = null; // 例如 'http://127.0.0.1:8888'
 // ===============================

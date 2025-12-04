@@ -611,6 +611,53 @@ class TaskStore {
     const queueKey = this.getQueueKey(userId, taskId);
     return redis.zcard(queueKey);
   }
+
+  /**
+   * 清空指定任务的队列与批次信息
+   */
+  async clearTaskQueue(userId, taskId) {
+    if (!userId || !taskId) {
+      return;
+    }
+    const queueKey = this.getQueueKey(userId, taskId);
+    const members = await redis.zrange(queueKey, 0, -1);
+    const batchNos = new Set();
+
+    for (const raw of members || []) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed?.batchNo) {
+          batchNos.add(parsed.batchNo);
+        }
+      } catch (error) {
+        // ignore
+      }
+    }
+
+    await redis.del(queueKey);
+
+    if (batchNos.size) {
+      await Promise.all(
+        Array.from(batchNos).map((batchNo) => this.cleanupBatchInfo(batchNo))
+      );
+    }
+  }
+
+  /**
+   * 清空任务统计相关的 Redis 计数
+   */
+  async clearTaskStats(taskId) {
+    if (!taskId) {
+      return;
+    }
+    const keys = [
+      this.getTaskPendingKey(taskId),
+      this.getTaskCountKey(taskId),
+      this.getTaskSuccessKey(taskId),
+      this.getTaskFailKey(taskId),
+    ];
+    await redis.del(...keys);
+  }
 }
 
 module.exports = new TaskStore();

@@ -1338,18 +1338,42 @@ function triggerTaskProcessing(userId, taskId, demand = 1, options = {}) {
   }
 }
 
-async function stopTaskQueue(userId, taskId, reason = 'manual') {
+async function stopTaskQueue(userId, taskId, reason = 'manual', options = {}) {
   if (!taskId) {
     return { stopped: false, message: 'taskId 不能为空' };
   }
 
+  const {
+    markPendingSettlement = false,
+    cleanupQueue = false,
+    cleanupTaskStats = false,
+    customStatus = null,
+  } = options || {};
+
+  let cachedStats = null;
+  if (markPendingSettlement || cleanupQueue || cleanupTaskStats) {
+    try {
+      cachedStats = await TaskStore.getTaskStats(taskId);
+    } catch (error) {
+      console.error(`[Task] 获取任务统计失败 (taskId=${taskId}):`, error.message);
+    }
+  }
+
+  const targetStatus =
+    customStatus ||
+    (markPendingSettlement
+      ? 'pending_settlement'
+      : reason === 'completed'
+        ? 'completed'
+        : 'stopped');
+
   try {
-    await TaskStore.setTaskStatus(taskId, 'stopped', {
+    await TaskStore.setTaskStatus(taskId, targetStatus, {
       userId: userId || '',
       reason: reason || 'manual',
     });
   } catch (error) {
-    console.error(`[Task] 设置任务状态为 stopped 失败 (taskId=${taskId}):`, error.message);
+    console.error(`[Task] 设置任务状态失败 (taskId=${taskId}):`, error.message);
   }
 
   if (userId) {
@@ -1361,20 +1385,38 @@ async function stopTaskQueue(userId, taskId, reason = 'manual') {
     }
   }
 
-  await finalizeTaskBill(taskId, { force: true });
+  if (markPendingSettlement) {
+    const successCount = cachedStats?.success || 0;
+    await QuotaService.completeBillByTask(taskId, successCount);
+  } else {
+    await finalizeTaskBill(taskId, { force: true });
+  }
+
+  if (cleanupQueue && userId) {
+    await TaskStore.clearTaskQueue(userId, taskId);
+  }
+
+  if (cleanupTaskStats) {
+    await TaskStore.clearTaskStats(taskId);
+  }
 
   if (sharedSocketManager && userId) {
     sharedSocketManager.emitToUid(userId, 'task:status', {
       isRunning: false,
-      status: 'stopped',
-      message: '任务已停止',
+      status: targetStatus,
+      message:
+        targetStatus === 'pending_settlement'
+          ? '任务待结算'
+          : targetStatus === 'completed'
+            ? '任务已完成'
+            : '任务已停止',
       taskId,
       is_end: true,
       reason,
     });
   }
 
-  return { stopped: true };
+  return { stopped: true, stats: cachedStats };
 }
 
 module.exports = {
