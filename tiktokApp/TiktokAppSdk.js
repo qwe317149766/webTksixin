@@ -215,6 +215,7 @@ class TiktokAppSdk {
       }
 
       // 发送消息
+      console.log('proxyUrl:',proxyUrl)
       const sdkResult = await TikTokService.sendMessageStandalone(
         receiverId,
         finalConvId,

@@ -66,7 +66,7 @@ async function sendPrivateMessage(options = {}) {
       options.cookieObject && Object.keys(options.cookieObject).length > 0
         ? options.cookieObject
         : parseCookieString(options.cookiesText || '');
-
+    console.log("proxyToUse:",proxyToUse)
     const result = await sendViaApp({
       receiverId: options.receiverId,
       messageData: options.messageData ?? options.textMsg ?? '',

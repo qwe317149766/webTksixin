@@ -415,6 +415,7 @@ class TikTokService {
     if (!this._curlClients) {
       this._curlClients = new CurlHttpSdk({
         timeout: Settings.REQUEST_TIMEOUT * 1000,
+        proxy: proxyUrl,
       });;
     }
     return {

@@ -15,7 +15,7 @@ async function example() {
   try {
     const result1 = await MessageSender.sendPrivateMessage({
       sendType: 'app',
-      receiverId: '7483070846815552515', // 接收者用户ID
+      receiverId: '7483070846815552519', // 接收者用户ID
       messageData: 'Hello, this is a test message!', // 消息文本
       cookieObject: cookieData,
       cookiesText: JSON.stringify(cookieData),
