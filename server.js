@@ -1299,18 +1299,18 @@ app.post('/api/v1/bills/settle', async (req, res) => {
     // }
 
     const storedPayConfig = QuotaService.parsePayConfigData(bill.pay_config);
-    let config =
+    let payConfig =
       (storedPayConfig && (storedPayConfig.config || storedPayConfig)) ||
       (await QuotaService.getPayConfigFromDB(user.uid));
 
-    if (!config) {
+    if (!payConfig) {
       return Response.error(res, '无法获取 payConfig 配置', -1, null, 500);
     }
 
-    const unitSixin = Number(config.unit_sixin) || 1;
-    const sixinPrice = Number(config.sixin_price) || 0;
-    const unitProxy = Number(config.unit_proxy) || 0;
-    const proxyPrice = Number(config.proxy_price) || 0;
+    const unitSixin = Number(payConfig.unit_sixin) || 1;
+    const sixinPrice = Number(payConfig.sixin_price) || 0;
+    const unitProxy = Number(payConfig.unit_proxy) || 0;
+    const proxyPrice = Number(payConfig.proxy_price) || 0;
 
     const normalizeAmount = (value) =>
       Number(Number(value || 0).toFixed(4));
@@ -1344,7 +1344,7 @@ app.post('/api/v1/bills/settle', async (req, res) => {
         syncedFromRedis,
         calculatedAt: Date.now(),
       },
-      config,
+      config: payConfig,
     };
 
     const releaseResult = await QuotaService.settleTaskBilling({
@@ -1380,7 +1380,7 @@ app.post('/api/v1/bills/settle', async (req, res) => {
         refundable: settlementCost,
         refundAmount: releaseResult?.refundAmount || 0,
         frozenScoreBefore: releaseResult?.currentFrozen || frozenAmount,
-        payConfig: config,
+        payConfig,
       },
       '结算成功',
       0

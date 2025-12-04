@@ -1,5 +1,5 @@
 {
-  "tableSuffix": "0",
+  "tableSuffix": "3",
   "batchSize": 50,
   "receiversFile": "西班牙1030_004.txt",
   "messagesFile": "messages.txt",
