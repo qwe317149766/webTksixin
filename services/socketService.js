@@ -883,7 +883,26 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
       filteredTasks.push(task);
     }
 
-    const assignmentCount = Math.min(filteredTasks.length, allCookies.length);
+    const taskStats = await TaskStore.getTaskStats(taskId);
+    const remainingTasks = Math.max(0, Number(taskStats?.remaining || 0));
+    const inFlightTasks =
+      (Array.isArray(batchRequester.queue) ? batchRequester.queue.length : 0) +
+      Number(batchRequester.active || 0);
+    const availableSlots = Math.max(0, remainingTasks - inFlightTasks);
+
+    if (availableSlots <= 0) {
+      console.log(
+        `[Task] 任务 ${taskId} 无可用执行槽位（remaining=${remainingTasks}, inFlight=${inFlightTasks}），全部任务重新入队`
+      );
+      await requeueTasks([
+        ...filteredTasks,
+        ...alreadyAssignedTasks,
+        ...duplicateTasks,
+      ]);
+      return;
+    }
+
+    const assignmentCount = Math.min(filteredTasks.length, allCookies.length, availableSlots);
     if (assignmentCount === 0) {
       await requeueTasks([
         ...filteredTasks,
@@ -1025,7 +1044,7 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
   }
 }
 
-function createTaskProcessor(socketManager, userId, taskId, statusChecker, statusUpdater) {
+function createTaskProcessor(socketManager, userId, taskId, statusChecker, statusUpdater, needMoreNotifier = null) {
   let isProcessing = false;
   let pendingDemand = 0;
   let nextPreferredPriority = null;
@@ -1080,13 +1099,29 @@ function createTaskProcessor(socketManager, userId, taskId, statusChecker, statu
         if (!tasks || tasks.length === 0) {
           console.log(`[Task] 用户 ${userId} 任务 ${taskId} 队列为空，等待新的触发`);
           const hasPending = await TaskStore.hasPendingTasks(taskId);
-          if (!hasPending && typeof statusUpdater === 'function') {
-            await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
+          if (!hasPending) {
+            if (pendingDemand > 0 && typeof needMoreNotifier === 'function') {
+              needMoreNotifier(pendingDemand);
+              pendingDemand = 0;
+            }
+            if (typeof statusUpdater === 'function') {
+              await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
+            }
+            break;
           }
-          break;
+          await TaskStore.waitForQueueReplenish(taskId, 1000);
+          continue;
         }
 
         pendingDemand = Math.max(0, pendingDemand - tasks.length);
+        if (
+          pendingDemand > 0 &&
+          typeof needMoreNotifier === 'function' &&
+          tasks.length < (config.task?.concurrency || 10)
+        ) {
+          needMoreNotifier(pendingDemand);
+          pendingDemand = 0;
+        }
 
         await processBatchTasks(
           socketManager,
@@ -1101,21 +1136,6 @@ function createTaskProcessor(socketManager, userId, taskId, statusChecker, statu
               : 0;
             if (need > 0) {
               pendingDemand += need;
-              const throttleKey = `${userId}:${taskId}`;
-              const now = Date.now();
-              const lastEmit = needMoreThrottleMap.get(throttleKey) || 0;
-              if (now - lastEmit >= NEED_MORE_INTERVAL) {
-                const emitted = socketManager.emitToUid(userId, 'task:needMore', {
-                  taskId,
-                  need,
-                });
-                needMoreThrottleMap.set(throttleKey, now);
-                if (!emitted) {
-                  console.log(`[Task] 用户 ${userId} 当前无 socket 连接，needMore 事件仅记录`);
-                }
-              } else {
-                console.log(`[Task] needMore 触发过于频繁，10秒内仅允许一次 (uid=${userId}, taskId=${taskId})`);
-              }
             }
           },
           statusUpdater,
@@ -1232,12 +1252,34 @@ function initSocketServer(httpServer) {
       broadcastStatus(newStatus, message);
     };
 
+    const emitNeedMoreEvent = (needAmount) => {
+      if (!Number.isFinite(needAmount) || needAmount <= 0) {
+        return;
+      }
+      const throttleKey = `${uid}:${taskId}`;
+      const now = Date.now();
+      const lastEmit = needMoreThrottleMap.get(throttleKey) || 0;
+      if (now - lastEmit >= NEED_MORE_INTERVAL) {
+        const emitted = socketManager.emitToUid(uid, 'task:needMore', {
+          taskId,
+          need: needAmount,
+        });
+        needMoreThrottleMap.set(throttleKey, now);
+        if (!emitted) {
+          console.log(`[Task] 用户 ${uid} 当前无 socket 连接，needMore 事件仅记录`);
+        }
+      } else {
+        console.log(`[Task] needMore 触发过于频繁，10秒内仅允许一次 (uid=${uid}, taskId=${taskId})`);
+      }
+    };
+
     const triggerTaskProcessing = createTaskProcessor(
       socketManager,
       uid,
       taskId,
       statusChecker,
-      updateStatus
+      updateStatus,
+      emitNeedMoreEvent
     );
     taskStatus.triggerFn = triggerTaskProcessing;
     userTaskProcessors.set(taskKey, triggerTaskProcessing);
