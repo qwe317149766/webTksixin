@@ -408,11 +408,14 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
               data.data
             )}`
           );
-          await dbConnection.execute(
-            `UPDATE ${tableName} SET status = 6 WHERE id = ?`,
-            [cookieId]
-          );
+          if (cookieId) {
+            await dbConnection.execute(
+              `UPDATE ${tableName} SET status = 6 WHERE id = ?`,
+              [cookieId]
+            );
+          }
           shouldRequeue = true;
+          recordFail = false;
         } else if (data.code === -10002) {
           console.log(
             `[Task] 用户 ${task.uid} 任务 ${taskIdFromResult} 网络异常: ${JSON.stringify(
@@ -534,6 +537,11 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
     // 检查是否已经处理过 done 事件，防止重复触发
     if (batchRequesterDoneFlags.get(key)) {
       console.log(`[BatchRequester] 任务 ${taskId} 的 done 事件已处理过，跳过重复处理`);
+      const pending = await TaskStore.hasPendingTasks(taskId);
+      if (pending && socketManager.hasConnections(userId)) {
+        console.log(`[BatchRequester] 任务 ${taskId} 仍有待处理队列，尝试重启`);
+        triggerTaskProcessing(userId, taskId, BATCH_SIZE);
+      }
       return;
     }
     
@@ -552,7 +560,10 @@ async function getOrCreateBatchRequester(socketManager, userId, taskId, onNeedMo
     
     try {
       const hasPending = await TaskStore.hasPendingTasks(taskId);
-      if (!hasPending && typeof statusUpdater === 'function') {
+      if (hasPending) {
+        console.log(`[BatchRequester] 任务 ${taskId} 在 done 时仍有剩余，尝试重启队列`);
+        triggerTaskProcessing(userId, taskId, BATCH_SIZE);
+      } else if (typeof statusUpdater === 'function') {
         await statusUpdater('idle', '任务队列已处理完成', { isEnd: true });
         await stopTaskQueue(userId, taskId, 'completed');
         // 注意：不清理 uidCookieMap，因为每个 uid 在整个系统中只能被分配一次
