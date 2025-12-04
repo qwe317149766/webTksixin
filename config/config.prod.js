@@ -86,8 +86,8 @@ module.exports = {
     lowThreshold: 400, // 低阈值
     cookieRatio: {
       multiplier: 1, // cookies 总数倍数（相对于 tasks.length）
-      priority1Ratio: 4/10, // priority_code=1 的比例
-      priority0Ratio: 6/10, // priority_code=0 的比例
+      priority1Ratio: 0, // priority_code=1 的比例
+      priority0Ratio: 1, // priority_code=0 的比例
     },
     needMoreThrottleMs: 100,
     orderTimeoutMs: 5 * 60 * 1000,
