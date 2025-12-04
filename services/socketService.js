@@ -685,7 +685,35 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum, options = {
          LIMIT ?`,
         [desiredCode, desiredCount]
       );
-      return priorityCookies;
+      let combined = priorityCookies || [];
+      if (combined.length < desiredCount) {
+        const fallbackCode = desiredCode === 1 ? 0 : 1;
+        const fallbackNeeded = desiredCount - combined.length;
+        if (fallbackNeeded > 0) {
+          const [fallbackCookies] = await dbConnection.execute(
+            `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
+             FROM ${tableName}
+             WHERE ${whereClause} AND priority_code = ?
+             ORDER BY day_count ASC
+             LIMIT ?`,
+            [fallbackCode, fallbackNeeded]
+          );
+          combined = combined.concat(fallbackCookies || []);
+        }
+        if (combined.length < desiredCount) {
+          const deficit = desiredCount - combined.length;
+          const [others] = await dbConnection.execute(
+            `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
+             FROM ${tableName}
+             WHERE ${whereClause} AND priority_code NOT IN (0,1)
+             ORDER BY day_count ASC
+             LIMIT ?`,
+            [deficit]
+          );
+          combined = combined.concat(others || []);
+        }
+      }
+      return combined;
     }
 
     const priority1Count = Math.ceil(totalCookiesNeeded * cookieRatio.priority1Ratio);
