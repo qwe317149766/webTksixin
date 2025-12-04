@@ -98,4 +98,22 @@ module.exports = {
   proxy: {
     socks5: 'socks5h://accountId-5086-tunnelId-12988-area-us:a123456@proxyus.starryproxy.com:10000',
   },
+  curl: {
+    modifyProxyUsername: false,
+    maxRequestsPerConnection: 20,
+    healthCheckIntervalMs: 60000,
+    queueBackoffBaseMs: 20,
+    queueBackoffMaxMs: 2000,
+    queueMaxConcurrentAttempts: 100,
+    connectionPool: {
+      initialSize: 100,
+      maxSize: 1000,
+      prewarmBatchSize: 20,
+      maxFailures: 3,
+      idleTimeoutMs: 300000,
+      refreshIntervalMs: 600000,
+      maxRequestsPerConnection: 1000,
+      maxConcurrentPerConnection: 1,
+    },
+  },
 }

@@ -90,7 +90,40 @@ module.exports = {
     windowMs: 1 * 60 * 1000,
     max: 100,
   },
+  task: {
+    batchSize: 200, // 批量处理任务数量
+    concurrency: 200, // 并发数
+    lowThreshold: 400, // 低阈值
+    cookieRatio: {
+      multiplier: 1, // cookies 总数倍数（相对于 tasks.length）
+      priority1Ratio: 4/10, // priority_code=1 的比例
+      priority0Ratio: 6/10, // priority_code=0 的比例
+    },
+    needMoreThrottleMs: 100,
+    orderTimeoutMs: 5 * 60 * 1000,
+    sender: {
+      channel: 'app',
+    }
+  },
   proxy: {
     socks5: 'socks5h://accountId-5086-tunnelId-12988-area-us:a123456@proxyus.starryproxy.com:10000',
+  },
+  curl: {
+    modifyProxyUsername: false,
+    maxRequestsPerConnection: 20,
+    healthCheckIntervalMs: 60000,
+    queueBackoffBaseMs: 20,
+    queueBackoffMaxMs: 2000,
+    queueMaxConcurrentAttempts: 100,
+    connectionPool: {
+      initialSize: 100,
+      maxSize: 1000,
+      prewarmBatchSize: 20,
+      maxFailures: 3,
+      idleTimeoutMs: 300000,
+      refreshIntervalMs: 600000,
+      maxRequestsPerConnection: 1000,
+      maxConcurrentPerConnection: 1,
+    },
   },
 };
