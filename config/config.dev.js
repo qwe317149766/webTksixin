@@ -125,5 +125,5 @@ module.exports = {
       maxRequestsPerConnection: 1000,
       maxConcurrentPerConnection: 1,
     },
-  },
+  }
 };

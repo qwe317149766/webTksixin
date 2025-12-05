@@ -5,7 +5,10 @@ const fs = require('fs');
 const _ = require('lodash');
 
 const platform = os.platform();
-const env = (platform === 'linux') ? 'prod' : 'dev';
+const envFromProcess = process.env.APP_ENV || process.env.NODE_ENV;
+const env = envFromProcess
+  ? envFromProcess.trim()
+  : (platform === 'linux' ? 'prod' : 'dev');
 
 console.log(`[Config] 正在加载配置... 环境: ${env}, 平台: ${platform}`);
 

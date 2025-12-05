@@ -1,5 +1,5 @@
 const mysql = require('mysql2/promise');
-const config = require('../config');
+const defaultConfig = require('../config');
 const MessageSender = require('../services/messageSender');
 const redis = require('../config/redis');
 const { getCurlHttpSdkInstance } = require('../CurlHttpSdk');
@@ -37,9 +37,15 @@ const messagesFilePath = getConfigValue('messagesFile', null);
 const messagesAsBlock = Boolean(getConfigValue('messagesAsBlock', false));
 const concurrency = Number(getConfigValue('concurrency', 100)) || 100;
 const fixedMessageText = getConfigValue('fixedMessage', null);
+const queryConditions = getConfigValue('queryConditions', null);
+const mysqlConfig = getConfigValue('mysql', defaultConfig.mysql);
 
 // 构建表名
 const tableName = tableSuffix ? `uni_cookies_${tableSuffix}` : 'uni_cookies';
+const receiverFlushThreshold =
+  Math.max(1, Number(getConfigValue('receiverFlushThreshold', 1)) || 1);
+const maxReceiverRetries =
+  Math.max(1, Number(getConfigValue('maxReceiverRetries', 3)) || 3);
 
 const STATUS_MAP = {
   0: '待检测',
@@ -147,7 +153,11 @@ function readTextFileLines(filePath, label, options = {}) {
 }
 
 function readReceivers(filePath) {
-  return readTextFileLines(filePath, '接收人');
+  const resolvedPath = path.isAbsolute(filePath)
+    ? filePath
+    : path.resolve(__dirname, filePath);
+  const lines = readTextFileLines(filePath, '接收人');
+  return { lines, resolvedPath };
 }
 
 function readMessages(filePath) {
@@ -169,7 +179,7 @@ function pickRandom(arr) {
 }
 
 // 是否存入 Redis 的配置
-const saveToRedis = config.cookies && config.cookies.saveToRedis !== false; // 默认启用
+const saveToRedis = defaultConfig.cookies && defaultConfig.cookies.saveToRedis !== false; // 默认启用
 
 console.log('📋 配置信息:');
 console.log(`   表名: ${tableName}`);
@@ -187,14 +197,14 @@ async function checkCookies() {
   try {
     // 创建数据库连接
     console.log('🔌 正在连接数据库...');
-    connection = await mysql.createConnection(config.mysql);
+    connection = await mysql.createConnection(mysqlConfig);
     console.log('✅ 数据库连接成功');
 
     // 检查表是否存在
     const [tables] = await connection.execute(
       `SELECT COUNT(*) as count FROM information_schema.tables 
        WHERE table_schema = ? AND table_name = ?`,
-      [config.mysql.database, tableName]
+      [mysqlConfig.database, tableName]
     );
 
     if (tables[0].count === 0) {
@@ -203,12 +213,68 @@ async function checkCookies() {
     }
 
     // 读取接收人列表
-    const receivers = readReceivers(receiversFilePath);
+    const {
+      lines: receiverQueueInitial,
+      resolvedPath: receiversFileAbsolutePath,
+    } = readReceivers(receiversFilePath);
+    if (!receiverQueueInitial.length) {
+      console.error('❌ 接收人列表为空，无法继续');
+      process.exit(1);
+    }
+    let receiverQueue = [...receiverQueueInitial];
+    let receiversConsumedSinceFlush = 0;
+    let receiversDepleted = false;
+    let receiverQueueLock = Promise.resolve();
+
+    const persistReceiverQueue = async () => {
+      const data = receiverQueue.join('\n');
+      await fs.promises.writeFile(
+        receiversFileAbsolutePath,
+        data ? `${data}\n` : '',
+        'utf8'
+      );
+      receiversConsumedSinceFlush = 0;
+    };
+
+    const withReceiverLock = (fn) => {
+      const run = receiverQueueLock.then(() => fn());
+      receiverQueueLock = run.catch(() => {});
+      return run;
+    };
+
+    const consumeReceiver = async () =>
+      withReceiverLock(async () => {
+        if (!receiverQueue.length) {
+          return null;
+        }
+        const uid = receiverQueue.shift();
+        receiversConsumedSinceFlush += 1;
+        if (
+          receiversConsumedSinceFlush >= receiverFlushThreshold ||
+          receiverQueue.length === 0
+        ) {
+          await persistReceiverQueue();
+        }
+        return uid;
+      });
+
+    const releaseReceiver = async (uid, options = {}) =>
+      withReceiverLock(async () => {
+        if (!uid) return;
+        const { remove = false } = options;
+        if (remove) {
+          receiversConsumedSinceFlush += 0;
+          if (receiverQueue.length === 0) {
+            await persistReceiverQueue();
+          }
+          return;
+        }
+        receiverQueue.push(uid);
+      });
     const messages = readMessages(messagesFilePath);
-    let receiverIndex = 0; // 当前使用的接收人索引
     const curlSdkInstance = getCurlHttpSdkInstance({
-      proxy: config?.curl?.defaultProxy || null,
-      proxyPool: config?.curl?.proxyPool || [],
+      proxy: defaultConfig?.curl?.defaultProxy || null,
+      proxyPool: defaultConfig?.curl?.proxyPool || [],
     });
     console.log('🧰 CurlHttpSdk 单例已初始化');
 
@@ -225,12 +291,24 @@ async function checkCookies() {
     // 循环处理，直到没有待检测的记录
     while (true) {
       // 批量获取待检测的记录
-      const [records] = await connection.execute(
-        `SELECT id, cookies_text, ck_uid FROM ${tableName} 
-         WHERE status = 0 
-         LIMIT ?`,
-        [batchSize]
-      );
+      const customQuery = getConfigValue('querySql');
+      let records = [];
+      if (typeof customQuery === 'string' && customQuery.trim()) {
+        const [rows] = await connection.execute(customQuery, [batchSize]);
+        records = rows;
+      } else {
+        const whereClause =
+          queryConditions && typeof queryConditions === 'string' && queryConditions.trim()
+            ? queryConditions
+            : 'status = 0';
+        const [rows] = await connection.execute(
+          `SELECT id, cookies_text, ck_uid,ck_type FROM ${tableName} 
+           WHERE ${whereClause} 
+           LIMIT ?`,
+          [batchSize]
+        );
+        records = rows;
+      }
 
       if (records.length === 0) {
         console.log('\n✅ 没有更多待检测的记录');
@@ -241,28 +319,36 @@ async function checkCookies() {
 
       // 处理单条记录的函数
       async function processRecord(record, index) {
-        const { id, cookies_text, ck_uid } = record;
+        const { id, cookies_text, ck_uid ,ck_type} = record;
         let recordConnection = null;
 
         try {
           // 为每条记录创建独立的数据库连接（避免并发冲突）
-          recordConnection = await mysql.createConnection(config.mysql);
+          recordConnection = await mysql.createConnection(mysqlConfig);
 
           let retryCount = 0;
-          const maxRetries = Math.min(receivers.length, 3); // 最多重试3次或接收人数量
           let result = null;
+          let lastReceiver = null;
           let success = false;
           let newStatus = null;
           // 如果遇到 10001，尝试换接收人重试
-          while (retryCount < maxRetries && !success) {
-            // 原子性地获取接收人索引
-            const currentIndex = receiverIndex++;
-            const toUid = receivers[currentIndex % receivers.length];
+          while (retryCount < maxReceiverRetries && !success && !receiversDepleted) {
+            const toUid = await consumeReceiver();
+            if (!toUid) {
+              receiversDepleted = true;
+              console.warn('⚠️ 接收人列表已耗尽，无法继续发送');
+              break;
+            }
 
+            lastReceiver = toUid;
             if (retryCount === 0) {
-              console.log(`[${index + 1}/${records.length}] 检测 ID: ${id}, UID: ${ck_uid || '未知'}, 接收人: ${toUid}`);
+              console.log(
+                `[${index + 1}/${records.length}] 检测 ID: ${id}, UID: ${ck_uid || '未知'}, 接收人: ${toUid}`
+              );
             } else {
-              console.log(`  🔄 [${index + 1}] 重试 (${retryCount}/${maxRetries - 1}): 换接收人 ${toUid}`);
+              console.log(
+                `  🔄 [${index + 1}] 重试 (${retryCount}/${maxReceiverRetries - 1}): 换接收人 ${toUid}`
+              );
             }
 
             // 构建请求数据并调用发送接口
@@ -274,7 +360,7 @@ async function checkCookies() {
             try {
               const cookieObj = parseCookieString(cookies_text);
               result = await MessageSender.sendPrivateMessage({
-                sendType: 'app',
+                sendType: ck_type || 'app',
                 receiverId: toUid,
                 messageData: textMsg,
                 cookieObject: cookieObj,
@@ -328,8 +414,9 @@ async function checkCookies() {
 
             // 如果返回码是 10001（接收者被限制），尝试换接收人
             if (result.code === 10001) {
+              await releaseReceiver(lastReceiver, { remove: true });
               retryCount++;
-              if (retryCount < maxRetries) {
+              if (retryCount < maxReceiverRetries) {
                 console.log(`  ⚠️  [${index + 1}] 接收者被限制，尝试换接收人...`);
                 await new Promise(resolve => setTimeout(resolve, 500)); // 延迟500ms后重试
                 continue;
@@ -410,8 +497,15 @@ async function checkCookies() {
             }
 
             totalProcessed++;
+            await releaseReceiver(lastReceiver, {
+              remove: result.code === 0 || result.code === 10001,
+            });
             success = true;
           }
+
+        if (receiversDepleted) {
+          return;
+        }
 
         } catch (error) {
           failCount++;
@@ -451,6 +545,9 @@ async function checkCookies() {
           }
           const { record, index } = tasksWithIndex[currentIndex];
           await processRecord(record, index);
+          if (receiversDepleted) {
+            break;
+          }
         }
       }
 
@@ -461,6 +558,11 @@ async function checkCookies() {
       console.log(`\n✅ 本批次处理完成 (${records.length} 条)`);
 
       // 如果获取的记录数少于批量大小，说明已经处理完所有记录
+      if (receiversDepleted) {
+        console.warn('⚠️ 接收人已耗尽，提前结束脚本');
+        break;
+      }
+
       if (records.length < batchSize) {
         break;
       }
@@ -497,7 +599,7 @@ async function checkCookies() {
 
   } catch (error) {
     console.error('❌ 检测过程出错:', error.message);
-    if (config.env === 'dev') {
+    if (defaultConfig.env === 'dev') {
       console.error(error.stack);
     }
     process.exit(1);

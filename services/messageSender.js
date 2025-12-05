@@ -7,7 +7,7 @@ const DEFAULT_CHANNEL =
 const DEFAULT_SOCKS5_PROXY =
   config.proxy?.socks5 || process.env.DEFAULT_SOCKS5_PROXY || '';
 
-function resolveChannel(preferred) {
+function resolveChannel(ck_type) {
   // if (preferred === 1 || preferred === '1') {
   //   return 'app';
   // }
@@ -20,7 +20,7 @@ function resolveChannel(preferred) {
   //     return lower;
   //   }
   // }
-  return DEFAULT_CHANNEL === 'app' ? 'app' : 'web';
+  return ck_type === 'web' ? 'web' : 'app';
 }
 
 function parseCookieString(cookieStr) {

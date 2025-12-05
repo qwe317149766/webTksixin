@@ -1,10 +1,11 @@
 {
-  "tableSuffix": "3",
-  "batchSize": 50,
+  "tableSuffix": "5",
+  "batchSize": 1,
   "receiversFile": "西班牙1030_004.txt",
   "messagesFile": "messages.txt",
   "messagesAsBlock": true,
-  "concurrency": 50,
-  "fixedMessage": ""
+  "concurrency": 1,
+  "fixedMessage": "",
+  "queryConditions":"status = 0"
 }
 

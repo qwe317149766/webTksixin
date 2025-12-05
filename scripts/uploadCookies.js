@@ -3,6 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const mysql = require('mysql2/promise');
 const config = require('../config');
+const mysqlConfig = config?.upload?.mysql || config.mysql;
 
 /**
  * 上传 Cookies 到数据库脚本
@@ -114,6 +115,14 @@ function getPriorityInfo(cookieObj = {}) {
   };
 }
 
+function getCookieType(cookieObj = {}) {
+  const token =
+    cookieObj['X-Tt-Token'] ||
+    cookieObj['x-tt-token'] ||
+    cookieObj['X-TT-Token'];
+  return token ? 'app' : 'web';
+}
+
 // 上传 cookies 到数据库
 async function uploadCookies() {
   let connection;
@@ -129,7 +138,7 @@ async function uploadCookies() {
 
     // 创建数据库连接
     console.log('🔌 正在连接数据库...');
-    connection = await mysql.createConnection(config.mysql);
+    connection = await mysql.createConnection(mysqlConfig);
     console.log('✅ 数据库连接成功');
 
     // 检查表是否存在，如果不存在则创建
@@ -177,6 +186,7 @@ async function uploadCookies() {
           ckUid,
           storeCountryCode: storeCountryCode || '',
           priorityCode,
+          ckType: getCookieType(cookieObj),
           sessionPreview: sessionid ? `${sessionid.substring(0, 10)}...` : 'sessionid: 无',
           lineNumber: i + 1,
         });
@@ -190,23 +200,24 @@ async function uploadCookies() {
 
     const insertSqlBase = `
       INSERT INTO ${tableName}
-        (cookies_text, ck_uid, store_country_code, priority_code, is_aync, create_time, update_time)
+        (cookies_text, ck_uid, store_country_code, priority_code, ck_type, is_aync, create_time, update_time)
       VALUES %VALUES%
       ON DUPLICATE KEY UPDATE
         cookies_text = VALUES(cookies_text),
         ck_uid = VALUES(ck_uid),
         store_country_code = VALUES(store_country_code),
         priority_code = VALUES(priority_code),
+        ck_type = VALUES(ck_type),
         is_aync = VALUES(is_aync),
         update_time = VALUES(update_time)
     `;
 
-    const singleInsertSql = insertSqlBase.replace('%VALUES%', '(?,?,?,?,?,UNIX_TIMESTAMP(),UNIX_TIMESTAMP())');
+    const singleInsertSql = insertSqlBase.replace('%VALUES%', '(?,?,?,?,?,?,UNIX_TIMESTAMP(),UNIX_TIMESTAMP())');
 
     for (let start = 0; start < preparedRows.length; start += BATCH_SIZE) {
       const chunk = preparedRows.slice(start, start + BATCH_SIZE);
       const placeholders = chunk
-        .map(() => '(?,?,?,?,?,UNIX_TIMESTAMP(),UNIX_TIMESTAMP())')
+        .map(() => '(?,?,?,?,?,?,UNIX_TIMESTAMP(),UNIX_TIMESTAMP())')
         .join(',');
       const params = [];
       chunk.forEach(row => {
@@ -215,6 +226,7 @@ async function uploadCookies() {
           row.ckUid,
           row.storeCountryCode,
           row.priorityCode,
+          row.ckType,
           0
         );
       });
@@ -236,6 +248,7 @@ async function uploadCookies() {
               row.ckUid,
               row.storeCountryCode,
               row.priorityCode,
+              row.ckType,
               0,
             ]);
             successCount++;
@@ -290,7 +303,7 @@ async function ensureTableExists(connection, tableName) {
     const [tables] = await connection.execute(
       `SELECT COUNT(*) as count FROM information_schema.tables 
        WHERE table_schema = ? AND table_name = ?`,
-      [config.mysql.database, tableName]
+      [mysqlConfig.database, tableName]
     );
 
     if (tables[0].count === 0) {
@@ -306,6 +319,7 @@ async function ensureTableExists(connection, tableName) {
           \`used_count\` int(11) NOT NULL DEFAULT '0' COMMENT '总使用次数',
           \`day_count\` int(11) NOT NULL DEFAULT '0' COMMENT '当前使用次数',
           \`priority_code\` tinyint(1) NOT NULL DEFAULT '0' COMMENT '使用优先级',
+          \`ck_type\` enum('app','web') NOT NULL DEFAULT 'web' COMMENT '账号类型',
           \`create_time\` int(11) NOT NULL DEFAULT '0' COMMENT '创建时间',
           \`update_time\` int(11) NOT NULL DEFAULT '0' COMMENT '更新时间',
           \`job_status\` tinyint(1) NOT NULL DEFAULT '0' COMMENT '脚本状态{radio}(0:待使用,1:使用中)',
@@ -324,9 +338,11 @@ async function ensureTableExists(connection, tableName) {
       await ensureColumnExists(connection, tableName, 'job_status', `ALTER TABLE \`${tableName}\` ADD COLUMN \`job_status\` tinyint(1) NOT NULL DEFAULT '0' COMMENT '脚本状态{radio}(0:待使用,1:使用中)' AFTER \`update_time\``);
       await ensureColumnExists(connection, tableName, 'store_country_code', `ALTER TABLE \`${tableName}\` ADD COLUMN \`store_country_code\` varchar(100) NOT NULL DEFAULT '' COMMENT '国家代码' AFTER \`job_status\``);
       await ensureColumnExists(connection, tableName, 'error_count', `ALTER TABLE \`${tableName}\` ADD COLUMN \`error_count\` int(11) NOT NULL DEFAULT '0' COMMENT '脚本执行错误次数' AFTER \`store_country_code\``);
+      await ensureColumnExists(connection, tableName, 'ck_type', `ALTER TABLE \`${tableName}\` ADD COLUMN \`ck_type\` enum('app','web') NOT NULL DEFAULT 'web' COMMENT '账号类型' AFTER \`priority_code\``);
       await ensureIndexExists(connection, tableName, 'idx_job_status', `ALTER TABLE \`${tableName}\` ADD KEY \`idx_job_status\` (\`job_status\`) USING BTREE`);
       await ensureColumnDefinition(connection, tableName, 'status', `ALTER TABLE \`${tableName}\` MODIFY COLUMN \`status\` tinyint(1) NOT NULL DEFAULT '0' COMMENT '账号状态{radio}(0:待检测,1:已检测,2:已风控,3:已退出,4:已封禁,5:维护社区,6:发送太快)'`);
       await ensureColumnDefinition(connection, tableName, 'store_country_code', `ALTER TABLE \`${tableName}\` MODIFY COLUMN \`store_country_code\` varchar(100) NOT NULL DEFAULT '' COMMENT '国家代码'`);
+      await ensureColumnDefinition(connection, tableName, 'ck_type', `ALTER TABLE \`${tableName}\` MODIFY COLUMN \`ck_type\` enum('app','web') NOT NULL DEFAULT 'web' COMMENT '账号类型'`);
     }
   } catch (error) {
     console.error(`❌ 检查/创建表失败: ${error.message}`);
@@ -338,7 +354,7 @@ async function ensureTableExists(connection, tableName) {
 async function ensureColumnExists(connection, tableName, columnName, alterSql) {
   const [columns] = await connection.execute(
     `SELECT COUNT(*) as count FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?`,
-    [config.mysql.database, tableName, columnName]
+    [mysqlConfig.database, tableName, columnName]
   );
   if (columns[0].count === 0) {
     console.log(`ℹ️  表 ${tableName} 缺少字段 ${columnName}，正在补充...`);
@@ -351,7 +367,7 @@ async function ensureColumnExists(connection, tableName, columnName, alterSql) {
 async function ensureIndexExists(connection, tableName, indexName, alterSql) {
   const [indexes] = await connection.execute(
     `SELECT COUNT(1) AS count FROM information_schema.statistics WHERE table_schema = ? AND table_name = ? AND index_name = ?`,
-    [config.mysql.database, tableName, indexName]
+    [mysqlConfig.database, tableName, indexName]
   );
   if (indexes[0].count === 0) {
     console.log(`ℹ️  表 ${tableName} 缺少索引 ${indexName}，正在补充...`);

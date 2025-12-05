@@ -2,18 +2,15 @@ const { TiktokSdk } = require('./TiktokSdk')
 //导入buildHeadersByLang
 const { buildHeadersByLang } = require('./util/helper')
 
-// 按账户 uid 复用 TiktokSdk 单例，避免重复初始化
-const sdkInstances = new Map() // key: uid(字符串) 或 'default'
-
+const sdkInstances = new Map()
 function getSdkInstance(uid) {
 	const key = uid ? String(uid) : 'default'
-	if (sdkInstances.has(key)) {
-		return sdkInstances.get(key)
+	if (!sdkInstances.has(key)) {
+		sdkInstances.set(key, new TiktokSdk())
 	}
-	const sdk = new TiktokSdk()
-	sdkInstances.set(key, sdk)
-	return sdk
+	return sdkInstances.get(key)
 }
+
 function generateWindowsChromeUA() {
 	const major = 130 + Math.floor(Math.random() * 11) // Chrome 版本 120~130
 	const build = `${major}.0.${Math.floor(Math.random() * 5000)}.${Math.floor(Math.random() * 200)}`
@@ -120,7 +117,7 @@ async function sendText(requestData) {
 	delete requestCookies['User-Agent']
 	delete requestCookies['user-agent']
 
-	const sdk = getSdkInstance(uid)
+	const sdk = getSdkInstance()
 	//先获取tzname
 	let {'store-country-code': storeCountryCode} = cookie
 	Log.info("storeCountryCode:",storeCountryCode)

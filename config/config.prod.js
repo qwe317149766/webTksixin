@@ -23,7 +23,7 @@ module.exports = {
   },
   // 本地 MySQL（用于 cookies 等）
   mysql: {
-    host: '62.164.220.35',
+    host: 'localhost',
     port: 3306,
     user: 'uni_fb',
     password: 'G4fMJZCkjHLLZDNs',
