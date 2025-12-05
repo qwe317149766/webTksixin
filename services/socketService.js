@@ -678,7 +678,7 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum, options = {
         `[Task] 定向获取 priority_code=${desiredCode} 的 cookies，数量 ${desiredCount}`
       );
       const [priorityCookies] = await dbConnection.execute(
-        `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
+        `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code,ck_type 
          FROM ${tableName}
          WHERE ${whereClause} AND priority_code = ?
          ORDER BY day_count ASC
@@ -691,7 +691,7 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum, options = {
         const fallbackNeeded = desiredCount - combined.length;
         if (fallbackNeeded > 0) {
           const [fallbackCookies] = await dbConnection.execute(
-            `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
+            `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code,ck_type
              FROM ${tableName}
              WHERE ${whereClause} AND priority_code = ?
              ORDER BY day_count ASC
@@ -703,7 +703,7 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum, options = {
         if (combined.length < desiredCount) {
           const deficit = desiredCount - combined.length;
           const [others] = await dbConnection.execute(
-            `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
+            `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code,ck_type
              FROM ${tableName}
              WHERE ${whereClause} AND priority_code NOT IN (0,1)
              ORDER BY day_count ASC
@@ -723,7 +723,7 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum, options = {
 
     // 从数据库获取 priority_code=1 的 cookies
     const [priority1Cookies] = await dbConnection.execute(
-      `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
+      `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code,ck_type 
        FROM ${tableName} 
      WHERE ${whereClause} AND priority_code = 1
        ORDER BY day_count ASC
@@ -734,7 +734,7 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum, options = {
     // 从数据库获取 priority_code=0 的 cookies
     let remainingForPriority0 = Math.max(0, totalCookiesNeeded - priority1Cookies.length);
     const [priority0Cookies] = await dbConnection.execute(
-      `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
+      `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code,ck_type
        FROM ${tableName} 
        WHERE ${whereClause} AND priority_code = 0
        ORDER BY day_count ASC
@@ -746,7 +746,7 @@ async  function getAlivableCookies(dbConnection, tableName,totalNum, options = {
     if (combined.length < totalCookiesNeeded) {
       const deficit = totalCookiesNeeded - combined.length;
       const [fallbackCookies] = await dbConnection.execute(
-        `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code 
+        `SELECT id, cookies_text, ck_uid, used_count, day_count, priority_code,ck_type 
          FROM ${tableName} 
          WHERE ${whereClause} AND priority_code NOT IN (0, 1)
          ORDER BY day_count ASC
@@ -984,7 +984,9 @@ async function processBatchTasks(socketManager, tasks, taskId, onNeedMore, statu
           finalTaskInfo.sendType ??
           config.task?.sender?.channel
       );
-      const sendType = resolvedChannel === 'app' ? 1 : 0;
+      console.log('cookie.ck_type:',cookie.ck_type)
+      // process.exit()
+      const sendType = cookie.ck_type || 'app';
       
       // 检查该 uid（接收者）是否已经在全局范围内分配过 cookie
       const uidKey = String(task.uid);

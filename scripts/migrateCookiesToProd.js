@@ -12,7 +12,7 @@ const mysql = require('mysql2/promise');
 const devConfig = require('../config/config.dev');
 const prodConfig = require('../config/config.prod');
 
-const tableName = process.argv[2] || 'uni_cookies_3';
+const tableName = process.argv[2] || 'uni_cookies_7';
 const tableName2 = process.argv[3] || 'uni_cookies_0';
 const BATCH_SIZE = Number(process.argv[3]) || 500;
 
