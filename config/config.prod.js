@@ -81,8 +81,8 @@ module.exports = {
     max: 100000,
   },
   task: {
-    batchSize: 200, // 批量处理任务数量
-    concurrency: 200, // 并发数
+    batchSize: 300, // 批量处理任务数量
+    concurrency: 300, // 并发数
     lowThreshold: 400, // 低阈值
     cookieRatio: {
       multiplier: 1, // cookies 总数倍数（相对于 tasks.length）
@@ -106,7 +106,7 @@ module.exports = {
     queueBackoffMaxMs: 2000,
     queueMaxConcurrentAttempts: 100,
     connectionPool: {
-      initialSize: 100,
+      initialSize: 200,
       maxSize: 1000,
       prewarmBatchSize: 20,
       maxFailures: 3,
