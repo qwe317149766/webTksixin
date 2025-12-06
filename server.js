@@ -1198,6 +1198,7 @@ app.get('/api/v1/bills', async (req, res) => {
           now - lastSuccessAt >= orderTimeoutMs;
 
         bill.isTimeout = hasTimedOut;
+        
         if (hasTimedOut) {
           bill.canSettle = true;
           bill.status = 1
