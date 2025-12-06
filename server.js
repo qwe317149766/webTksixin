@@ -42,6 +42,22 @@ try {
   console.error(`[Init] 创建成功 UID 目录失败: ${dirError.message}`);
 }
 
+async function countSuccessUidsFromFile(userId, taskId) {
+  if (!userId || !taskId) {
+    return 0;
+  }
+  const filePath = path.join(SUCCESS_UID_DIR, `${userId}-${taskId}.txt`);
+  try {
+    const content = await fs.promises.readFile(filePath, 'utf8');
+    return content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean).length;
+  } catch (error) {
+    return 0;
+  }
+}
+
 const app = express();
 
 // 信任反向代理（只信任第一层代理，更安全）
@@ -1310,6 +1326,15 @@ app.post('/api/v1/bills/settle', async (req, res) => {
         bill.complate_num = refreshedBill.complate_num;
         completedNum = Number(refreshedBill.complate_num || stopResult?.stats?.success || 0);
         syncedFromRedis = true;
+
+        if (completedNum <= 0) {
+          const fileSuccessCount = await countSuccessUidsFromFile(user.uid, taskId);
+          if (fileSuccessCount > 0) {
+            completedNum = fileSuccessCount;
+            bill.complate_num = fileSuccessCount;
+            await QuotaService.completeBillByTask(taskId, fileSuccessCount);
+          }
+        }
       } else {
         return Response.error(res, '账单状态不可结算', -1, null, 400);
       }
