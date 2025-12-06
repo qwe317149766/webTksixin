@@ -81,6 +81,22 @@ function logSuccessUidAsync(userId, taskId, receiverUid) {
   });
 }
 
+function randomDelayBetween(minMs, maxMs) {
+  const safeMin = Math.max(0, Math.floor(minMs));
+  const safeMax = Math.max(safeMin, Math.floor(maxMs));
+  if (safeMax === safeMin) {
+    return safeMin;
+  }
+  return Math.floor(Math.random() * (safeMax - safeMin + 1)) + safeMin;
+}
+
+function waitMs(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const needMoreThrottleMap = new Map(); // key -> timestamp
 const NEED_MORE_INTERVAL =
   (config.task && typeof config.task.needMoreThrottleMs === 'number'
@@ -90,6 +106,33 @@ const NEED_MORE_DEMAND_MULTIPLIER =
   (config.task && typeof config.task.needMoreDemandMultiplier === 'number'
     ? config.task.needMoreDemandMultiplier
     : 1.2);
+
+const DEFAULT_PER_MESSAGE_SLEEP = { min: 500, max: 1200 };
+const resolvedPerMessageSleep = (() => {
+  const range = config.task?.perMessageSleep || {};
+  const minCandidate =
+    range.minMs ??
+    config.task?.perMessageSleepMinMs ??
+    DEFAULT_PER_MESSAGE_SLEEP.min;
+  const maxCandidate =
+    range.maxMs ??
+    config.task?.perMessageSleepMaxMs ??
+    DEFAULT_PER_MESSAGE_SLEEP.max;
+  let min = Number(minCandidate);
+  let max = Number(maxCandidate);
+  if (!Number.isFinite(min) || min < 0) {
+    min = DEFAULT_PER_MESSAGE_SLEEP.min;
+  }
+  if (!Number.isFinite(max) || max < 0) {
+    max = DEFAULT_PER_MESSAGE_SLEEP.max;
+  }
+  if (max < min) {
+    max = min;
+  }
+  return { min, max };
+})();
+const PER_MESSAGE_SLEEP_MIN_MS = resolvedPerMessageSleep.min;
+const PER_MESSAGE_SLEEP_MAX_MS = resolvedPerMessageSleep.max;
 
 async function getTaskTotals(taskId) {
   const stats = await TaskStore.getTaskStats(taskId);
@@ -951,6 +994,15 @@ async function processBatchTasks(socketManager, tasks, taskId, statusUpdater, op
         }
         if (outcome.isSuccess) {
           remainingQuota = Math.max(0, remainingQuota - 1);
+        }
+        if (remainingQuota > 0) {
+          const delayMs = randomDelayBetween(
+            PER_MESSAGE_SLEEP_MIN_MS,
+            PER_MESSAGE_SLEEP_MAX_MS
+          );
+          if (delayMs > 0) {
+            await waitMs(delayMs);
+          }
         }
       }
     }

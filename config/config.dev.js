@@ -94,6 +94,10 @@ module.exports = {
     batchSize: 200, // 批量处理任务数量
     concurrency: 200, // 并发数
     lowThreshold: 400, // 低阈值
+    perMessageSleep: {
+      minMs: 500,
+      maxMs: 1200,
+    },
     cookieRatio: {
       multiplier: 1, // cookies 总数倍数（相对于 tasks.length）
       priority1Ratio: 4/10, // priority_code=1 的比例
