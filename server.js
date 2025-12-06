@@ -1207,7 +1207,7 @@ app.get('/api/v1/bills', async (req, res) => {
         if (!bill.lastSuccessAt) {
           const updateTimeMs = bill.update_time ? Number(bill.update_time) * 1000 : 0;
           const staleWithoutSuccess =
-            updateTimeMs > 0 && now - updateTimeMs >= 3 * 60 * 60 * 1000;
+            updateTimeMs > 0 && now - updateTimeMs >= 2 * 60 * 60 * 1000;
           if (staleWithoutSuccess && Number(bill.status) === 0) {
             bill.canSettle = true;
             bill.status = 1;
