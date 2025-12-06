@@ -277,7 +277,7 @@ async function handleSendResult(result, socketManager) {
   const receiverUid = result.uid || payload.uid || task.uid;
   const messageData = payload.data || result.data || {};
   let cookieShouldStop = false;
-
+  console.log("[filter_reason]",payload.filter_reason)
   try {
     dbConnection = await mysqlPool.getConnection();
     if (resultCode === 0) {

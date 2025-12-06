@@ -90,8 +90,8 @@ module.exports = {
     },
     cookieRatio: {
       multiplier: 1, // cookies 总数倍数（相对于 tasks.length）
-      priority1Ratio: 3/10, // priority_code=1 的比例
-      priority0Ratio: 7/10, // priority_code=0 的比例
+      priority1Ratio: 5/10, // priority_code=1 的比例
+      priority0Ratio: 5/10, // priority_code=0 的比例
     },
     needMoreThrottleMs: 200,
     orderTimeoutMs: 5 * 60 * 1000,
