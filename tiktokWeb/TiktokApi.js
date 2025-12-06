@@ -39,7 +39,6 @@ async function sendText(requestData) {
 		user_agent,
 		device_id,
 	} = requestData
-	Log.info('[MockTikTokApi] 发送消息:', requestData)
 
 	console.log('=== TikTok SDK  ===\n')
 	//解析cookies
@@ -59,7 +58,6 @@ async function sendText(requestData) {
 	} else {
 		cookie = cookieParams
 	}
-	console.log('cookieParams:',cookie,typeof cookie,cookie['store-country-code'])
 	// process.exit()
 	// 从 multi_sids 中提取 uid
 	let multiSids = cookie['multi_sids']

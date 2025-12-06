@@ -603,7 +603,6 @@ class HttpClient {
 
 			let tzName = cookies['tz_name'] || 'America/New_York'
 			const timestamp = getTimestampByTimezone(tzName)
-			Log.info("timestamp:",timestamp)
 			const xBogus = signBogus(queryString, encodeData, userAgent, timestamp)
 
 			const xGnarly = signGnarly(queryString, encodeData, userAgent, 0, '5.1.1')

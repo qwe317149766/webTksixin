@@ -1,11 +1,27 @@
 {
-  "tableSuffix": "5",
-  "batchSize": 200,
+  "tableSuffix": "0",
+  "batchSize": 1,
   "receiversFile": "西班牙1030_004.txt",
   "messagesFile": "messages.txt",
   "messagesAsBlock": true,
-  "concurrency": 200,
+  "concurrency": 1,
   "fixedMessage": "",
-  "queryConditions":"status = 0"
+  "queryConditions":"status = 0",
+  "mysql":{
+    "host": "62.164.220.35",
+    "port": 3306,
+    "user": "uni_fb",
+    "password": "G4fMJZCkjHLLZDNs",
+    "database": "uni_fb",
+    "connectionLimit": "1000",
+    "queueLimit": "0",
+    "waitForConnections": "true",
+    "enableKeepAlive": "true",
+    "keepAliveInitialDelay": "0",
+    "connectTimeout": "35000",
+    "charset": "utf8mb4",
+    "timezone": "+00:00",
+    "multipleStatements": "false"
+  }
 }
 

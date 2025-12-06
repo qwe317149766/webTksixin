@@ -109,7 +109,6 @@ async function sendPrivateMessage(options = {}) {
   if (!requestData.proxy && proxyToUse) {
     requestData.proxy = proxyToUse;
   }
-  console.log('options:',options)
   //createSequenceId 随机从10000到12000
   const createSequenceId = Math.floor(Math.random() * 2001) + 10000;
   const sendSequenceId = createSequenceId + 1;
