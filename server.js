@@ -955,22 +955,22 @@ app.post('/api/v1/tk-task/enqueue', async (req, res) => {
       sendType: taskData.sendType,
     });
 
-    // 入队后若队列任务不足并且未获取到处理器，则尝试触发
+    // 如果任务当前为 stopped，说明之前已经停掉，需要在新任务入队后主动触发一次
     try {
-      const queueSize = await TaskStore.size(user.uid, taskId);
-      const concurrency = config.task?.concurrency || 10;
-      if (queueSize > 0) {
-        const demand = Math.min(queueSize, concurrency);
-        const triggered = triggerTaskProcessing(user.uid, taskId, demand);
-        if (!triggered) {
-          console.warn(`[API] 任务 ${taskId} 处理器未找到，可能需要先建立 Socket 连接`);
+      const taskStatus = await TaskStore.getTaskStatus(taskId);
+      if (taskStatus?.status === 'stopped') {
+        const queueSize = await TaskStore.size(user.uid, taskId);
+        const concurrency = config.task?.concurrency || 10;
+        if (queueSize > 0) {
+          const demand = Math.min(queueSize, concurrency);
+          const triggered = triggerTaskProcessing(user.uid, taskId, demand);
+          if (!triggered) {
+            console.warn(`[API] 任务 ${taskId} 处理器未找到，可能需要先建立 Socket 连接`);
+          }
         }
-      } else {
-        console.log(`[API] 任务 ${taskId} 队列数量 ${queueSize}，无需触发`);
       }
     } catch (error) {
-      console.error(`[API] 触发任务处理失败:`, error);
-      // 不阻止接口返回，只记录错误
+      console.error(`[API] 检查任务状态并触发处理失败:`, error);
     }
 
     return Response.success(res, {

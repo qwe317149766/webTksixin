@@ -81,13 +81,13 @@ module.exports = {
     max: 100000,
   },
   task: {
-    batchSize: 200, // 批量处理任务数量
-    concurrency: 200, // 并发数
-    lowThreshold: 400, // 低阈值
+    batchSize: 1, // 批量处理任务数量
+    concurrency: 1, // 并发数
+    lowThreshold: 2, // 低阈值
     cookieRatio: {
       multiplier: 1, // cookies 总数倍数（相对于 tasks.length）
-      priority1Ratio: 7/10, // priority_code=1 的比例
-      priority0Ratio: 3/10, // priority_code=0 的比例
+      priority1Ratio: 0/10, // priority_code=1 的比例
+      priority0Ratio: 10/10, // priority_code=0 的比例
     },
     needMoreThrottleMs: 200,
     orderTimeoutMs: 5 * 60 * 1000,
