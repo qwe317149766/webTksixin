@@ -81,9 +81,9 @@ module.exports = {
     max: 100000,
   },
   task: {
-    batchSize: 1, // 批量处理任务数量
-    concurrency: 1, // 并发数
-    lowThreshold: 2, // 低阈值
+    batchSize: 200, // 批量处理任务数量
+    concurrency: 200, // 并发数
+    lowThreshold: 400, // 低阈值
     perMessageSleep: {
       minMs: 500,
       maxMs: 1200,
