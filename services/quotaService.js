@@ -467,6 +467,28 @@ async function completeBillByTask(taskId, completedNum = 0) {
   }
 }
 
+async function updateBillTaskTongji(taskId, stats = {}) {
+  if (!taskId || !stats || Object.keys(stats).length === 0) {
+    return;
+  }
+
+  try {
+    await authMysqlPool.execute(
+      `UPDATE uni_user_bill
+          SET task_tongji = ?
+        WHERE taskId = ?
+          AND bill_type = 'sixin'
+          AND bill_category = 'frozen'`,
+      [JSON.stringify(stats), taskId]
+    );
+  } catch (error) {
+    console.error(
+      `[Quota] 更新 task_tongji 失败 (taskId=${taskId}):`,
+      error.message
+    );
+  }
+}
+
 async function getBillByTask(uid, taskId) {
   if (!uid || !taskId) {
     return null;
@@ -824,5 +846,6 @@ module.exports = {
   settleTaskBilling,
   releaseFrozenAndRefund,
   updateBillStatus,
+  updateBillTaskTongji,
 };
 

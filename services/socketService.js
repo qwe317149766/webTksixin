@@ -233,6 +233,74 @@ const globalTaskProcessors = new Map(); // key: `${userId}:${taskId}` -> trigger
 const stoppedTasks = new Set(); // 记录已停止/完成的任务
 let sharedSocketManager = null;
 
+const FILTER_REASON_POPUP_VALUES = new Set([0, 1]);
+const TASK_FILTER_REASON_KEY_PREFIX = 'task:filter_reason';
+
+function getTaskFilterReasonKey(taskId) {
+  return `${TASK_FILTER_REASON_KEY_PREFIX}:${taskId}`;
+}
+
+async function recordFilterReasonPopup(taskId, reason) {
+  if (!taskId || !FILTER_REASON_POPUP_VALUES.has(reason)) {
+    return;
+  }
+  try {
+    await redis.hincrby(getTaskFilterReasonKey(taskId), String(reason), 1);
+  } catch (error) {
+    console.warn(
+      `[Task] 记录 filter_reason 弹窗失败 (taskId=${taskId}):`,
+      error.message
+    );
+  }
+}
+
+async function flushFilterReasonStats(taskId) {
+  if (!taskId) {
+    return null;
+  }
+  const key = getTaskFilterReasonKey(taskId);
+  let raw;
+  try {
+    raw = await redis.hgetall(key);
+  } catch (error) {
+    console.warn(
+      `[Task] 获取 filter_reason 统计失败 (taskId=${taskId}):`,
+      error.message
+    );
+    return null;
+  }
+  if (!raw || Object.keys(raw).length === 0) {
+    return null;
+  }
+  try {
+    await redis.del(key);
+  } catch (error) {
+    console.warn(
+      `[Task] 清空 filter_reason 统计失败 (taskId=${taskId}):`,
+      error.message
+    );
+  }
+  const popupStats = {};
+  let total = 0;
+  for (const [reason, value] of Object.entries(raw)) {
+    const normalizedReason = Number(reason);
+    if (!FILTER_REASON_POPUP_VALUES.has(normalizedReason)) {
+      continue;
+    }
+    const count = Number(value) || 0;
+    if (!count) {
+      continue;
+    }
+    popupStats[String(normalizedReason)] = count;
+    total += count;
+  }
+  if (!total) {
+    return null;
+  }
+  popupStats.total = total;
+  return { filter_reason_popup: popupStats };
+}
+
 function getTaskRequesterKey(userId, taskId) {
   return `${userId}:${taskId}`;
 }
@@ -278,6 +346,21 @@ async function handleSendResult(result, socketManager) {
   const messageData = payload.data || result.data || {};
   let cookieShouldStop = false;
   console.log("[filter_reason]",payload.filter_reason)
+  const filterReasonRaw =
+    payload.filter_reason ??
+    payload.filterReason ??
+    messageData.filter_reason ??
+    messageData.filterReason;
+  const normalizedFilterReason =
+    filterReasonRaw === undefined || filterReasonRaw === null
+      ? null
+      : Number(filterReasonRaw);
+  if (
+    normalizedFilterReason !== null &&
+    FILTER_REASON_POPUP_VALUES.has(normalizedFilterReason)
+  ) {
+    await recordFilterReasonPopup(taskIdFromResult, normalizedFilterReason);
+  }
   try {
     dbConnection = await mysqlPool.getConnection();
     if (resultCode === 0) {
@@ -1534,6 +1617,20 @@ async function stopTaskQueue(userId, taskId, reason = 'manual', options = {}) {
 
   if (cleanupTaskStats) {
     await TaskStore.clearTaskStats(taskId);
+  }
+
+  let filterReasonStats = null;
+  try {
+    filterReasonStats = await flushFilterReasonStats(taskId);
+  } catch (error) {
+    console.warn(
+      `[Task] 汇总 filter_reason 统计失败 (taskId=${taskId}):`,
+      error.message
+    );
+  }
+
+  if (filterReasonStats) {
+    await QuotaService.updateBillTaskTongji(taskId, filterReasonStats);
   }
 
   if (sharedSocketManager && userId) {

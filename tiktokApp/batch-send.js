@@ -18,7 +18,7 @@ const readline = require('readline');
 const MessageSender = require('../services/messageSender');
 
 // === 可根据需求修改的固定参数 ===
-const DEFAULT_COOKIES_FILE = path.resolve(__dirname, 'cookies.txt');
+const DEFAULT_COOKIES_FILE = path.resolve(__dirname, 'TK100-测试-trans.txt');
 const DEFAULT_RECEIVER_ID = '7502761795141452807';
 // const DEFAULT_RECEIVER_ID = '7231173793783251965';
 const DEFAULT_MESSAGE = 'Hello from batch script';
