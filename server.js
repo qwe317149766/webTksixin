@@ -1200,6 +1200,7 @@ app.get('/api/v1/bills', async (req, res) => {
         bill.isTimeout = hasTimedOut;
         if (hasTimedOut) {
           bill.canSettle = true;
+          bill.status = 1
         }
       })
     );
