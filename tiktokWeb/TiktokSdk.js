@@ -9,7 +9,7 @@ const {
 	decodeResponse,
 	encrpytCreateConversationV2,
 } = require('./protobufTool')
-const { CurlHttpSdk } = require('../CurlHttpSdk')
+const { getCurlHttpSdkInstance } = require('../CurlHttpSdk')
 const { getTimestampByTimezone,buildHeadersByLang} = require('./util/helper')
 let Log
 try {
@@ -147,18 +147,16 @@ class HttpClient {
 	 * @returns {CurlHttpSdk} CurlHttpSdk 实例
 	 */
 	getCurlHttpSdk(proxy = null) {
-		// 如果代理配置改变或实例不存在，创建新实例
-		if (!this.curlHttpSdk || this.proxy !== proxy) {
-			this.proxy = proxy
-			this.curlHttpSdk = new CurlHttpSdk({
-				proxy: proxy,
-				timeout: 30000,
-				connectTimeout: 15000,
-				headers: this.defaultHeaders,
-				rejectUnauthorized: false,
-			})
+		if (!this.curlHttpSdk) {
+			const initOptions = proxy ? { proxy } : {}
+			this.proxy = proxy || null
+			this.curlHttpSdk = getCurlHttpSdkInstance(initOptions)
 			console.log(
-				`[HttpClient] 创建新的 CurlHttpSdk 实例，代理: ${proxy || '无'}`
+				`[HttpClient] 复用全局 CurlHttpSdk 实例，代理: ${this.proxy || '默认'}`
+			)
+		} else if (proxy && this.proxy !== proxy) {
+			console.warn(
+				`[HttpClient] 全局 CurlHttpSdk 已初始化，当前代理固定为 ${this.proxy || '默认'}，无法切换为 ${proxy}`
 			)
 		}
 		return this.curlHttpSdk

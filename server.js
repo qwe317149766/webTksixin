@@ -6,6 +6,18 @@ const helmet = require('helmet');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const config = require('./config');
+const { initCurlHttpSdk } = require('./CurlHttpSdk');
+
+const defaultCurlInitOptions = {};
+const primaryProxy =
+  config.proxy?.socks5 || config.proxy?.https || config.proxy?.http || null;
+if (primaryProxy) {
+  defaultCurlInitOptions.proxy = primaryProxy;
+}
+if (Array.isArray(config.curl?.proxyPool) && config.curl.proxyPool.length) {
+  defaultCurlInitOptions.proxyPool = config.curl.proxyPool;
+}
+initCurlHttpSdk(defaultCurlInitOptions);
 
 const mysqlPool = require('./config/database');
 const authMysqlPool = mysqlPool.authPool;

@@ -57,6 +57,27 @@ const CONNECTION_POOL_CONFIG = {
         config.curl?.connectionPool?.maxConcurrentPerConnection ?? 1,
 };
 
+function resolveDefaultProxy() {
+    if (config.proxy) {
+        if (config.proxy.socks5) return config.proxy.socks5;
+        if (config.proxy.https) return config.proxy.https;
+        if (config.proxy.http) return config.proxy.http;
+    }
+    return null;
+}
+
+function buildGlobalOptions(overrides = {}) {
+    const base = {};
+    const defaultProxy = resolveDefaultProxy();
+    if (defaultProxy) {
+        base.proxy = defaultProxy;
+    }
+    if (Array.isArray(config.curl?.proxyPool) && config.curl.proxyPool.length) {
+        base.proxyPool = config.curl.proxyPool;
+    }
+    return { ...base, ...overrides };
+}
+
 class CurlHttpSdk extends EventEmitter {
     constructor(options = {}) {
         super();
@@ -704,13 +725,31 @@ if (require.main === module) {
 	})()
 }
 let sharedInstance = null;
+let sharedOptions = null;
 
-function getCurlHttpSdkInstance(options = {}) {
+function initCurlHttpSdk(options = {}) {
 	if (sharedInstance) {
+		Log.warn('[CurlHttpSdk] 全局实例已初始化，忽略重复初始化请求');
 		return sharedInstance;
 	}
-	sharedInstance = new CurlHttpSdk(options);
+	const resolvedOptions = buildGlobalOptions(options);
+	sharedInstance = new CurlHttpSdk(resolvedOptions);
+	sharedOptions = resolvedOptions;
 	return sharedInstance;
 }
 
-module.exports = { CurlHttpSdk, getCurlHttpSdkInstance };
+function getCurlHttpSdkInstance(options = {}) {
+	if (!sharedInstance) {
+		return initCurlHttpSdk(options);
+	}
+	if (options && Object.keys(options).length) {
+		Log.warn(
+			'[CurlHttpSdk] 全局实例已初始化，新增参数被忽略:',
+			JSON.stringify(options)
+		);
+	}
+	return sharedInstance;
+}
+
+module.exports = { CurlHttpSdk, initCurlHttpSdk, getCurlHttpSdkInstance };
+

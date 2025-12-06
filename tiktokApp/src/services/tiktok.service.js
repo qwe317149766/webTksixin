@@ -6,7 +6,7 @@ try {
 } catch (error) {
   console.warn('[TikTokService] Redis 客户端初始化失败，仅使用内存缓存:', error.message);
 }
-const { CurlHttpSdk } = require('../../../CurlHttpSdk');
+const { getCurlHttpSdkInstance } = require('../../../CurlHttpSdk');
 const { makeArgus } = require('../utils/encryption/argus');
 const { makeGorgon } = require('../utils/encryption/gorgon');
 const { makeLadon } = require('../utils/encryption/ladon');
@@ -413,10 +413,13 @@ class TikTokService {
    */
   static getHttpClient(proxyUrl, proxyUid = null) {
     if (!this._curlClients) {
-      this._curlClients = new CurlHttpSdk({
-        timeout: Settings.REQUEST_TIMEOUT * 1000,
-        proxy: proxyUrl,
-      });;
+      const options = proxyUrl ? { proxy: proxyUrl } : {};
+      this._curlClients = getCurlHttpSdkInstance(options);
+      this._curlProxy = proxyUrl || null;
+    } else if (proxyUrl && this._curlProxy !== proxyUrl) {
+      console.warn(
+        `[TikTokService] 全局 CurlHttpSdk 已初始化，当前代理固定为 ${this._curlProxy || '默认'}，无法切换为 ${proxyUrl}`
+      );
     }
     return {
       sdk: this._curlClients,
